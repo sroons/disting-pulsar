@@ -16,7 +16,7 @@ A [pulsar synthesis](https://en.wikipedia.org/wiki/Pulsar_synthesis) instrument 
 
 ## Parameters
 
-31 parameters across 8 pages:
+36 parameters across 10 pages:
 
 | Page | Parameters |
 |------|-----------|
@@ -112,7 +112,7 @@ Output L and Output R are routable to any output bus via the **Routing** page.
 4. Shape the sound on the **Synthesis** page by sweeping Pulsaret and Window morphing controls
 5. Add parallel formants on the **Formants** page and spread them with **Panning**
 6. Create rhythmic textures with **Masking** (stochastic for random dropouts, burst for repeating patterns)
-7. Patch CV sources to modulate pitch, formant frequency, duty cycle, or mask amount in real time
+7. Patch CV sources to modulate pitch, formant frequency, duty cycle, mask amount, pulsaret/window morph, glide, sample rate, or amplitude in real time
 8. Optionally load a WAV file from the SD card as a custom pulsaret waveform on the **Sample** page
 
 ## License

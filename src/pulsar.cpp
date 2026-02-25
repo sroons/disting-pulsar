@@ -1,3 +1,30 @@
+// ============================================================
+// Pulsar Synthesis — disting NT Plugin
+// ============================================================
+//
+// A MIDI-controlled pulsar synthesis instrument based on Curtis Roads'
+// technique: trains of short sonic particles (pulsarets) are generated
+// at a fundamental frequency, each shaped by a window function. Up to
+// 3 parallel formants with independent frequency, stereo panning, and
+// stochastic or burst masking create rich, evolving timbres.
+//
+// Architecture:
+//   DRAM  (~312 KB) — pre-computed pulsaret/window lookup tables + sample buffer
+//   DTC   (~140 B)  — per-sample hot state (phase, envelope, DC filter, PRNG)
+//   SRAM  (~1 KB)   — algorithm struct, cached params, WAV request state
+//
+// Signal chain (per sample):
+//   Master phase oscillator → pulse trigger → mask decision
+//   → For each formant: pulsaret × window × mask → constant-power pan
+//   → Normalize → ASR envelope × velocity × amplitude
+//   → DC-blocking highpass → Padé tanh soft clip → stereo output
+//
+// Hardware controls:
+//   Pot L = pulsaret morph, Pot C = duty cycle, Pot R = window morph
+//   Encoder button L = cycle mask mode, Encoder button R = cycle formant count
+//
+// ============================================================
+
 #define _USE_MATH_DEFINES
 #include <math.h>
 #include <string.h>
@@ -13,45 +40,61 @@
 // ============================================================
 // Table sizes
 // ============================================================
-static const int kTableSize = 2048;
-static const int kNumPulsarets = 10;
-static const int kNumWindows = 5;
-static const int kSampleBufferSize = 48000;
+static const int kTableSize = 2048;         // Samples per waveform/window table
+static const int kNumPulsarets = 10;        // Number of pulsaret waveforms
+static const int kNumWindows = 5;           // Number of window functions
+static const int kSampleBufferSize = 48000; // Max sample frames (1 sec at 48kHz)
 
 // ============================================================
 // Memory structures
 // ============================================================
 
+// DRAM: large pre-computed lookup tables and sample buffer (~312 KB)
 struct _pulsarDRAM {
-	float pulsaretTables[kNumPulsarets][kTableSize];
-	float windowTables[kNumWindows][kTableSize];
-	float sampleBuffer[kSampleBufferSize];
+	float pulsaretTables[kNumPulsarets][kTableSize]; // 10 waveforms: sine, sine×2, sine×3, sinc, tri, saw, square, formant, pulse, noise
+	float windowTables[kNumWindows][kTableSize];     // 5 windows: rectangular, gaussian, hann, exp decay, linear decay
+	float sampleBuffer[kSampleBufferSize];           // WAV sample data for sample-based pulsarets
 };
 
+// DTC: performance-critical per-sample audio state (~140 bytes)
+// Lives in Cortex-M7 tightly-coupled memory for single-cycle access.
 struct _pulsarDTC {
-	float masterPhase;
-	float fundamentalHz;
-	float targetFundamentalHz;
-	float glideCoeff;
-	float formantDuty[3];
-	float maskSmooth[3];
-	float maskTarget[3];
-	float maskSmoothCoeff;
-	float envValue;
-	float envTarget;
-	float attackCoeff;
-	float releaseCoeff;
-	float leakDC_xL;
-	float leakDC_yL;
-	float leakDC_xR;
-	float leakDC_yR;
-	float leakDC_coeff;
-	uint8_t currentNote;
-	uint8_t velocity;
-	bool gate;
-	bool prevPulseActive;
-	uint32_t prngState;
-	uint32_t burstCounter;
+	// Master oscillator
+	float masterPhase;          // 0.0–1.0 sawtooth phase accumulator
+	float fundamentalHz;        // Current fundamental frequency (smoothed by glide)
+	float targetFundamentalHz;  // Target frequency from MIDI note
+	float glideCoeff;           // One-pole glide/portamento coefficient
+
+	// Per-formant state
+	float formantDuty[3];       // Duty cycle per formant (ratio of pulse that is active)
+	float maskSmooth[3];        // Smoothed mask gain per formant (0=muted, 1=sounding)
+	float maskTarget[3];        // Mask target per formant (updated on pulse boundaries)
+	float maskSmoothCoeff;      // Sample-rate-dependent mask smoothing coefficient (~3ms)
+
+	// ASR envelope
+	float envValue;             // Current envelope level (0.0–1.0)
+	float envTarget;            // Envelope target (1.0 when gate on, 0.0 when off)
+	float attackCoeff;          // One-pole attack coefficient
+	float releaseCoeff;         // One-pole release coefficient
+
+	// DC-blocking highpass filter state (y = x - x_prev + coeff * y_prev)
+	float leakDC_xL;            // Previous input sample, left channel
+	float leakDC_yL;            // Previous output sample, left channel
+	float leakDC_xR;            // Previous input sample, right channel
+	float leakDC_yR;            // Previous output sample, right channel
+	float leakDC_coeff;         // Sample-rate-dependent coefficient (~25 Hz cutoff)
+
+	// MIDI state
+	uint8_t currentNote;        // Currently held MIDI note number
+	uint8_t velocity;           // Note-on velocity (0–127), scales output amplitude
+	bool gate;                  // True while a note is held
+	bool prevPulseActive;       // Previous pulse activity state (unused, reserved)
+
+	// Masking state
+	uint32_t prngState;         // LCG pseudo-random number generator state
+	uint32_t burstCounter;      // Burst pattern counter (modulo burstOn+burstOff)
+
+	// CV modulation cache (unused legacy fields, CV is read directly from busses)
 	float cvPitchOffset;
 	float cvFormantMod;
 	float cvDutyMod;
@@ -59,68 +102,71 @@ struct _pulsarDTC {
 };
 
 // ============================================================
-// Parameter enums
+// Parameter indices
+//
+// 36 parameters across 10 pages. Indices must match the order
+// of entries in the parametersDefault[] array below.
 // ============================================================
 
 enum {
-	// Synthesis page
-	kParamPulsaret,
-	kParamWindow,
-	kParamDutyCycle,
-	kParamDutyMode,
+	// -- Synthesis page --
+	kParamPulsaret,     // 0.0–9.0 (scaling10): morphs between 10 pulsaret waveforms
+	kParamWindow,       // 0.0–4.0 (scaling10): morphs between 5 window functions
+	kParamDutyCycle,    // 1–100%: fraction of pulse period containing active pulsaret
+	kParamDutyMode,     // Enum: Manual (use Duty Cycle param) or Formant (auto-derive from freq ratio)
 
-	// Formants page
-	kParamFormantCount,
-	kParamFormant1Hz,
-	kParamFormant2Hz,
-	kParamFormant3Hz,
+	// -- Formants page --
+	kParamFormantCount, // 1–3: number of parallel formant oscillators
+	kParamFormant1Hz,   // 20–8000 Hz: formant 1 frequency
+	kParamFormant2Hz,   // 20–8000 Hz: formant 2 frequency (grayed when count < 2)
+	kParamFormant3Hz,   // 20–8000 Hz: formant 3 frequency (grayed when count < 3)
 
-	// Masking page
-	kParamMaskMode,
-	kParamMaskAmount,
-	kParamBurstOn,
-	kParamBurstOff,
+	// -- Masking page --
+	kParamMaskMode,     // Enum: Off / Stochastic (random) / Burst (periodic pattern)
+	kParamMaskAmount,   // 0–100%: probability of muting a pulse (stochastic mode)
+	kParamBurstOn,      // 1–16: number of consecutive sounding pulses (burst mode)
+	kParamBurstOff,     // 0–16: number of consecutive muted pulses (burst mode)
 
-	// Envelope page
-	kParamAttack,
-	kParamRelease,
-	kParamAmplitude,
-	kParamGlide,
+	// -- Envelope page --
+	kParamAttack,       // 0.1–2000 ms (scaling10): ASR envelope attack time
+	kParamRelease,      // 1.0–3200 ms (scaling10): ASR envelope release time
+	kParamAmplitude,    // 0–100%: master output amplitude
+	kParamGlide,        // 0–2000 ms (scaling10): portamento time between notes
 
-	// Panning page
-	kParamPan1,
-	kParamPan2,
-	kParamPan3,
+	// -- Panning page --
+	kParamPan1,         // -100 to +100: stereo pan for formant 1 (constant-power)
+	kParamPan2,         // -100 to +100: stereo pan for formant 2 (grayed when count < 2)
+	kParamPan3,         // -100 to +100: stereo pan for formant 3 (grayed when count < 3)
 
-	// Sample page
-	kParamUseSample,
-	kParamFolder,
-	kParamFile,
-	kParamSampleRate,
+	// -- Sample page --
+	kParamUseSample,    // Enum: Off/On — replaces synthesized pulsaret with WAV sample
+	kParamFolder,       // SD card sample folder selector (kNT_unitHasStrings)
+	kParamFile,         // SD card sample file selector (kNT_unitConfirm, triggers async load)
+	kParamSampleRate,   // 25–400%: playback rate multiplier for sample pulsaret
 
-	// CV Inputs page 1
-	kParamPitchCV,
-	kParamFormantCV,
-	kParamDutyCV,
-	kParamMaskCV,
+	// -- CV Inputs page 1 --
+	kParamPitchCV,      // Bus selector: 1V/oct pitch modulation (per-sample)
+	kParamFormantCV,    // Bus selector: bipolar formant Hz mod (±50% at ±5V)
+	kParamDutyCV,       // Bus selector: bipolar duty cycle offset (±20% at ±5V)
+	kParamMaskCV,       // Bus selector: unipolar mask amount (0–10V → 0–1)
 
-	// CV Inputs page 2
-	kParamPulsaretCV,
-	kParamWindowCV,
-	kParamGlideCV,
-	kParamSampleRateCV,
+	// -- CV Inputs page 2 --
+	kParamPulsaretCV,   // Bus selector: bipolar pulsaret morph (±5V sweeps full range)
+	kParamWindowCV,     // Bus selector: bipolar window morph (±5V sweeps full range)
+	kParamGlideCV,      // Bus selector: unipolar glide time (0–10V → 0–2000ms)
+	kParamSampleRateCV, // Bus selector: bipolar sample rate offset (±5V → ±2x)
 
-	// CV Inputs page 3
-	kParamAmplitudeCV,
+	// -- CV Inputs page 3 --
+	kParamAmplitudeCV,  // Bus selector: unipolar amplitude (0–10V → 0–1)
 
-	// Routing page
-	kParamMidiCh,
-	kParamOutputL,
-	kParamOutputLMode,
-	kParamOutputR,
-	kParamOutputRMode,
+	// -- Routing page --
+	kParamMidiCh,       // 1–16: MIDI channel filter
+	kParamOutputL,      // Bus selector: left audio output
+	kParamOutputLMode,  // Output mode: 0=add, 1=replace
+	kParamOutputR,      // Bus selector: right audio output
+	kParamOutputRMode,  // Output mode: 0=add, 1=replace
 
-	kNumParams,
+	kNumParams,         // Total: 36
 };
 
 // ============================================================
@@ -227,6 +273,11 @@ static const _NT_parameterPages parameterPages = {
 
 // ============================================================
 // Algorithm struct (in SRAM)
+//
+// Main plugin instance. Lives in SRAM with pointers to DTC and DRAM.
+// Contains a mutable copy of parameter definitions (for dynamic max
+// values on folder/file params) and cached parameter values converted
+// to floats for use in the audio thread.
 // ============================================================
 
 struct _pulsarAlgorithm : public _NT_algorithm
@@ -234,39 +285,44 @@ struct _pulsarAlgorithm : public _NT_algorithm
 	_pulsarAlgorithm() {}
 	~_pulsarAlgorithm() {}
 
-	_NT_parameter params[kNumParams];
+	_NT_parameter params[kNumParams]; // Mutable copy of parameter definitions
 
-	_pulsarDTC* dtc;
-	_pulsarDRAM* dram;
+	_pulsarDTC* dtc;                  // Pointer to DTC (fast per-sample state)
+	_pulsarDRAM* dram;                // Pointer to DRAM (lookup tables + sample buffer)
 
-	// Cached parameter values
-	float pulsaretIndex;
-	float windowIndex;
-	float dutyCycle;
-	int dutyMode;
-	int formantCount;
-	float formantHz[3];
-	int maskMode;
-	float maskAmount;
-	int burstOn;
-	int burstOff;
-	float attackMs;
-	float releaseMs;
-	float amplitude;
-	float glideMs;
-	float pan[3];
-	int useSample;
-	float sampleRateRatio;
+	// Cached parameter values (converted from int16 to float in parameterChanged)
+	float pulsaretIndex;              // 0.0–9.0: pulsaret morph position
+	float windowIndex;                // 0.0–4.0: window morph position
+	float dutyCycle;                  // 0.01–1.0: pulse duty cycle
+	int dutyMode;                     // 0=manual, 1=formant-derived
+	int formantCount;                 // 1–3: active formant count
+	float formantHz[3];               // Formant frequencies in Hz
+	int maskMode;                     // 0=off, 1=stochastic, 2=burst
+	float maskAmount;                 // 0.0–1.0: stochastic mask probability
+	int burstOn;                      // Burst pattern: consecutive sounding pulses
+	int burstOff;                     // Burst pattern: consecutive muted pulses
+	float attackMs;                   // Envelope attack time in ms
+	float releaseMs;                  // Envelope release time in ms
+	float amplitude;                  // 0.0–1.0: master amplitude
+	float glideMs;                    // Glide/portamento time in ms
+	float pan[3];                     // -1.0 to +1.0: per-formant stereo pan position
+	int useSample;                    // 0=table pulsaret, 1=sample pulsaret
+	float sampleRateRatio;            // 0.25–4.0: sample playback rate multiplier
 
-	// Sample loading state
-	_NT_wavRequest wavRequest;
-	bool cardMounted;
-	bool awaitingCallback;
-	int sampleLoadedFrames;
+	// Async SD card sample loading state
+	_NT_wavRequest wavRequest;        // Persistent request struct for NT_readSampleFrames()
+	bool cardMounted;                 // Tracks SD card mount state for change detection
+	bool awaitingCallback;            // True while an async WAV load is in progress
+	int sampleLoadedFrames;           // Number of valid frames in sampleBuffer
 };
 
 // ============================================================
-// Helper: compute one-pole coefficient from time in ms
+// Helper: compute one-pole filter coefficient from time constant
+//
+// Returns the coefficient 'c' for a one-pole smoother:
+//   y[n] = target + c * (y[n-1] - target)
+// where ms is the desired time constant and sr is the sample rate.
+// A time constant of 0 returns 0 (instant response).
 // ============================================================
 
 static float coeffFromMs(float ms, float sr)
@@ -279,8 +335,23 @@ static float coeffFromMs(float ms, float sr)
 
 // ============================================================
 // Table generation
+//
+// Called once in construct() to fill DRAM lookup tables.
+// All tables are 2048 samples, normalized to ±1.0 (pulsarets)
+// or 0.0–1.0 (windows). Phase runs 0.0–1.0 across the table.
 // ============================================================
 
+// Pulsaret waveforms (10 tables):
+//   0: sine         — pure sine wave
+//   1: sine×2       — 2nd harmonic sine
+//   2: sine×3       — 3rd harmonic sine
+//   3: sinc         — sinc(8*pi*(p-0.5)), band-limited impulse
+//   4: triangle     — triangle wave
+//   5: saw          — sawtooth (rising ramp)
+//   6: square       — 50% duty square wave
+//   7: formant      — sine×3 with exponential decay envelope
+//   8: pulse        — narrow Gaussian spike at center
+//   9: noise        — deterministic pseudo-random noise (LCG)
 static void generatePulsaretTables(float tables[][kTableSize])
 {
 	for (int i = 0; i < kTableSize; ++i)
@@ -339,6 +410,12 @@ static void generatePulsaretTables(float tables[][kTableSize])
 	}
 }
 
+// Window functions (5 tables):
+//   0: rectangular  — flat 1.0 (no windowing)
+//   1: gaussian     — exp(-0.5 * ((p-0.5)/0.3)^2), sigma=0.3
+//   2: hann         — 0.5 * (1 - cos(2*pi*p)), classic smooth window
+//   3: exp decay    — exp(-4*p), sharp attack with gradual fade
+//   4: linear decay — 1-p, simple ramp down
 static void generateWindowTables(float tables[][kTableSize])
 {
 	for (int i = 0; i < kTableSize; ++i)
@@ -366,7 +443,7 @@ static void generateWindowTables(float tables[][kTableSize])
 }
 
 // ============================================================
-// WAV callback
+// WAV callback — called asynchronously when sample loading completes
 // ============================================================
 
 static void wavCallback(void* callbackData, bool success)
@@ -376,7 +453,7 @@ static void wavCallback(void* callbackData, bool success)
 }
 
 // ============================================================
-// calculateRequirements
+// calculateRequirements — tell the host how much memory we need
 // ============================================================
 
 void calculateRequirements(_NT_algorithmRequirements& req, const int32_t* specifications)
@@ -389,7 +466,12 @@ void calculateRequirements(_NT_algorithmRequirements& req, const int32_t* specif
 }
 
 // ============================================================
-// construct
+// construct — initialize a new plugin instance
+//
+// Called once when the algorithm is loaded into a slot.
+// Sets up memory pointers, generates all lookup tables,
+// initializes DTC state, and configures the WAV request struct
+// for async sample loading.
 // ============================================================
 
 _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorithmRequirements& req, const int32_t* specifications)
@@ -480,7 +562,11 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 }
 
 // ============================================================
-// parameterString — for sample folder/file names
+// parameterString — display names for sample folder/file selectors
+//
+// Called by the host for parameters with kNT_unitHasStrings or
+// kNT_unitConfirm. Returns the folder/file name from the SD card
+// for display in the parameter UI instead of a raw numeric index.
 // ============================================================
 
 int parameterString(_NT_algorithm* self, int p, int v, char* buff)
@@ -520,7 +606,12 @@ int parameterString(_NT_algorithm* self, int p, int v, char* buff)
 }
 
 // ============================================================
-// parameterChanged
+// parameterChanged — convert raw int16 parameter values to floats
+//
+// Called by the host whenever a parameter value changes (from UI,
+// MIDI, or CV). Converts integer parameter values to the float
+// representations used by the audio thread, computes derived
+// coefficients (envelope, glide), and manages parameter graying.
 // ============================================================
 
 void parameterChanged(_NT_algorithm* self, int p)
@@ -654,6 +745,12 @@ void parameterChanged(_NT_algorithm* self, int p)
 
 // ============================================================
 // MIDI handling
+//
+// Responds to note on/off on the configured MIDI channel.
+// Note on: sets target frequency (A440 12-TET), stores velocity,
+//   opens gate. If glide is enabled, frequency slides from current.
+// Note off: closes gate (matching note only) to start release.
+// Velocity 0 note-on is treated as note-off per MIDI convention.
 // ============================================================
 
 void midiMessage(_NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byte2)
@@ -702,9 +799,14 @@ void midiMessage(_NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byte
 }
 
 // ============================================================
-// Inline helpers for audio
+// Inline helpers for audio processing
+//
+// These are called per-sample in the inner loop and must be fast.
+// All table reads use linear interpolation with power-of-2 wrapping.
 // ============================================================
 
+// Read a single table with linear interpolation.
+// phase is 0.0–1.0, tableSize must be a power of 2 for the bitmask wrap.
 static inline float readTableLerp(const float* table, int tableSize, float phase)
 {
 	float pos = phase * tableSize;
@@ -715,6 +817,9 @@ static inline float readTableLerp(const float* table, int tableSize, float phase
 	return table[idx] + frac * (table[idx2] - table[idx]);
 }
 
+// Read from the pulsaret table bank with bilinear morphing.
+// index is 0.0–9.0: integer part selects two adjacent tables,
+// fractional part crossfades between them.
 static inline float readTableMorph(const float tables[][kTableSize], float index, float phase)
 {
 	int idx0 = (int)index;
@@ -726,6 +831,8 @@ static inline float readTableMorph(const float tables[][kTableSize], float index
 	return s0 + frac * (s1 - s0);
 }
 
+// Read from the window table bank with bilinear morphing.
+// Same as readTableMorph but clamped to kNumWindows.
 static inline float readWindowMorph(const float tables[][kTableSize], float index, float phase)
 {
 	int idx0 = (int)index;
@@ -737,21 +844,24 @@ static inline float readWindowMorph(const float tables[][kTableSize], float inde
 	return s0 + frac * (s1 - s0);
 }
 
+// Fast Padé approximation of tanh for soft clipping.
+// tanh(x) ≈ x(27+x²)/(27+9x²), accurate to <1% for |x| < 3.
 static inline float fastTanh(float x)
 {
 	float x2 = x * x;
 	return x * (27.0f + x2) / (27.0f + 9.0f * x2);
 }
 
+// Fast exp2 approximation for 1V/oct pitch CV processing.
+// Uses integer bit manipulation + cubic polynomial refinement.
+// Accurate to ~1 cent over [-4, 4] range (±4 octaves).
 static inline float fastExp2f(float x)
 {
-	// Fast exp2 approximation via integer bit manipulation + cubic refinement
-	// Accurate to ~1 cent over [-4, 4] range (sufficient for 1V/oct CV)
 	float fi = floorf(x);
 	float f = x - fi;
-	// Cubic polynomial for 2^f on [0,1): max error ~0.01 cents
+	// Cubic polynomial for 2^f on [0,1)
 	float p = f * (f * (f * 0.079441f + 0.227411f) + 0.693147f) + 1.0f;
-	// Apply integer part via bit manipulation
+	// Apply integer part by adding to IEEE 754 exponent bits
 	union { float fv; int32_t iv; } u;
 	u.fv = p;
 	u.iv += (int32_t)fi << 23;
@@ -760,6 +870,21 @@ static inline float fastExp2f(float x)
 
 // ============================================================
 // step — main audio processing
+//
+// Called by the host at the audio sample rate in blocks of
+// numFramesBy4*4 frames. busFrames points to all 64 bus buffers
+// laid out contiguously (numFrames per bus). This function:
+//
+//   1. Reads CV input busses and computes per-block averages
+//   2. Precomputes per-formant duty cycles, pan gains, and
+//      formant ratios outside the sample loop
+//   3. Per sample: advances master phase, detects pulse triggers,
+//      evaluates mask, synthesizes pulsaret×window for each formant,
+//      pans to stereo, applies envelope and velocity, DC-blocks,
+//      soft-clips, and writes to output busses
+//
+// Compiled with -O2 (via attribute) for better loop optimization
+// while the rest of the plugin uses -Os.
 // ============================================================
 
 void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
@@ -1108,7 +1233,12 @@ void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames,
 }
 
 // ============================================================
-// draw
+// draw — custom display rendering
+//
+// Called by the host to render the algorithm's display (256×64 px).
+// Draws: pulsaret×window waveform preview, fundamental frequency
+// readout, envelope level bar, gate indicator, formant count.
+// Returns false to keep the standard parameter line at the top.
 // ============================================================
 
 bool draw(_NT_algorithm* self)
@@ -1184,7 +1314,12 @@ bool draw(_NT_algorithm* self)
 }
 
 // ============================================================
-// Serialization — save/restore sample selection
+// Serialization — save/restore sample selection in presets
+//
+// The sample folder, file index, and use-sample toggle are saved
+// to the preset JSON so that loading a preset also restores the
+// selected WAV file. Other parameters are handled automatically
+// by the disting NT host via the standard parameter system.
 // ============================================================
 
 void serialise(_NT_algorithm* self, _NT_jsonStream& stream)
@@ -1243,7 +1378,20 @@ bool deserialise(_NT_algorithm* self, _NT_jsonParse& parse)
 }
 
 // ============================================================
-// Custom UI — pots + encoder buttons
+// Custom UI — hardware pot and encoder button mappings
+//
+// Overrides 3 pots and 2 encoder buttons for direct hands-on
+// control. All other controls (encoders, buttons 1–4) retain
+// standard disting NT page navigation behavior.
+//
+//   Pot L:             Pulsaret morph (0.0–9.0)
+//   Pot C:             Duty Cycle (1–100%)
+//   Pot R:             Window morph (0.0–4.0)
+//   Encoder Button L:  Cycle mask mode (Off → Stochastic → Burst)
+//   Encoder Button R:  Cycle formant count (1 → 2 → 3)
+//
+// setupUi() syncs pot soft-takeover positions so pots don't
+// jump when first touched after switching to this algorithm.
 // ============================================================
 
 uint32_t hasCustomUi(_NT_algorithm* self)
@@ -1302,7 +1450,11 @@ void setupUi(_NT_algorithm* self, _NT_float3& pots)
 }
 
 // ============================================================
-// Factory + entry point
+// Factory definition + plugin entry point
+//
+// The factory struct registers all callbacks with the disting NT
+// host. pluginEntry() is the single exported symbol that the
+// host calls to discover this plugin's factories.
 // ============================================================
 
 static const _NT_factory factory =
