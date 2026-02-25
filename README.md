@@ -67,7 +67,22 @@ Copy `plugins/pulsar.o` to the `plugins/` folder on your disting NT's SD card an
 
 ## Hardware Controls
 
-The plugin uses standard disting NT parameter navigation — pots, encoders, and buttons scroll through pages and adjust parameter values in the normal way. No custom UI mapping is defined.
+Encoders and buttons not listed below retain their standard disting NT navigation behavior.
+
+### Pots
+
+| Pot | Parameter | Range |
+|-----|-----------|-------|
+| Left | Pulsaret morph | 0.0–9.0 (sweeps all 10 waveforms) |
+| Centre | Duty Cycle | 1–100% |
+| Right | Window morph | 0.0–4.0 (sweeps all 5 windows) |
+
+### Encoder Buttons
+
+| Button | Action |
+|--------|--------|
+| Left encoder button | Cycle mask mode: Off → Stochastic → Burst → Off |
+| Right encoder button | Cycle formant count: 1 → 2 → 3 → 1 |
 
 ### CV Inputs
 

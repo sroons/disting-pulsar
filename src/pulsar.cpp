@@ -1243,6 +1243,65 @@ bool deserialise(_NT_algorithm* self, _NT_jsonParse& parse)
 }
 
 // ============================================================
+// Custom UI — pots + encoder buttons
+// ============================================================
+
+uint32_t hasCustomUi(_NT_algorithm* self)
+{
+	return kNT_potL | kNT_potC | kNT_potR | kNT_encoderButtonL | kNT_encoderButtonR;
+}
+
+void customUi(_NT_algorithm* self, const _NT_uiData& data)
+{
+	int algIdx = NT_algorithmIndex(self);
+	if (algIdx < 0) return;
+	uint32_t offset = NT_parameterOffset();
+
+	// Pot L: Pulsaret morph (0.0–9.0, stored as 0–90 with scaling10)
+	if (data.controls & kNT_potL)
+	{
+		int value = (int)(data.pots[0] * 90.0f + 0.5f);
+		NT_setParameterFromUi(algIdx, kParamPulsaret + offset, (int16_t)value);
+	}
+
+	// Pot C: Duty Cycle (1–100%)
+	if (data.controls & kNT_potC)
+	{
+		int value = (int)(data.pots[1] * 99.0f + 0.5f) + 1;
+		NT_setParameterFromUi(algIdx, kParamDutyCycle + offset, (int16_t)value);
+	}
+
+	// Pot R: Window morph (0.0–4.0, stored as 0–40 with scaling10)
+	if (data.controls & kNT_potR)
+	{
+		int value = (int)(data.pots[2] * 40.0f + 0.5f);
+		NT_setParameterFromUi(algIdx, kParamWindow + offset, (int16_t)value);
+	}
+
+	// Encoder Button L: cycle mask mode (Off -> Stochastic -> Burst -> Off)
+	if ((data.controls & kNT_encoderButtonL) && !(data.lastButtons & kNT_encoderButtonL))
+	{
+		int mode = (self->v[kParamMaskMode] + 1) % 3;
+		NT_setParameterFromUi(algIdx, kParamMaskMode + offset, (int16_t)mode);
+	}
+
+	// Encoder Button R: cycle formant count (1 -> 2 -> 3 -> 1)
+	if ((data.controls & kNT_encoderButtonR) && !(data.lastButtons & kNT_encoderButtonR))
+	{
+		int count = self->v[kParamFormantCount] % 3 + 1;
+		NT_setParameterFromUi(algIdx, kParamFormantCount + offset, (int16_t)count);
+	}
+}
+
+void setupUi(_NT_algorithm* self, _NT_float3& pots)
+{
+	// Sync pot soft-takeover positions
+	pots[0] = self->v[kParamPulsaret] / 90.0f;  // Pulsaret
+	pots[1] = (self->v[kParamDutyCycle] - 1) / 99.0f;  // Duty Cycle
+	pots[2] = self->v[kParamWindow] / 40.0f;  // Window
+}
+
+// ============================================================
 // Factory + entry point
 // ============================================================
 
@@ -1263,9 +1322,9 @@ static const _NT_factory factory =
 	.midiRealtime = NULL,
 	.midiMessage = midiMessage,
 	.tags = kNT_tagInstrument,
-	.hasCustomUi = NULL,
-	.customUi = NULL,
-	.setupUi = NULL,
+	.hasCustomUi = hasCustomUi,
+	.customUi = customUi,
+	.setupUi = setupUi,
 	.serialise = serialise,
 	.deserialise = deserialise,
 	.midiSysEx = NULL,
