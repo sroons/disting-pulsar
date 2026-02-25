@@ -65,6 +65,25 @@ This produces `plugins/pulsar.o`.
 
 Copy `plugins/pulsar.o` to the `plugins/` folder on your disting NT's SD card and reboot the module.
 
+## Hardware Controls
+
+The plugin uses standard disting NT parameter navigation — pots, encoders, and buttons scroll through pages and adjust parameter values in the normal way. No custom UI mapping is defined.
+
+### CV Inputs
+
+CV inputs are not hardwired to physical jacks. They are routable via bus selectors on the **CV Inputs** page — set each to any of the 64 busses (12 hardware inputs + 8 outputs + 44 aux), or 0 for none.
+
+| Parameter | Function | Range |
+|-----------|----------|-------|
+| Pitch CV | 1V/oct frequency modulation (per-sample) | any input bus |
+| Formant CV | Bipolar formant Hz modulation (±50% at ±5V) | any input bus |
+| Duty CV | Bipolar duty cycle offset (±20% at ±5V) | any input bus |
+| Mask CV | Unipolar mask amount (0–10V maps to 0–1) | any input bus |
+
+### Outputs
+
+Output L and Output R are routable to any output bus via the **Routing** page.
+
 ## Usage
 
 1. Add the **Pulsar** algorithm to a slot on the disting NT
