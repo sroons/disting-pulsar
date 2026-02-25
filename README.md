@@ -9,7 +9,7 @@ A [pulsar synthesis](https://en.wikipedia.org/wiki/Pulsar_synthesis) instrument 
 - **1–3 parallel formants** with independent frequency control and constant-power stereo panning
 - **Masking** — stochastic (probability-based) and burst (on/off pattern) modes for rhythmic textures
 - **ASR envelope** with configurable attack/release and MIDI velocity sensitivity
-- **4 CV inputs** — pitch (1V/oct), formant modulation, duty cycle, mask amount
+- **9 CV inputs** — pitch (1V/oct), formant, duty, mask, pulsaret morph, window morph, glide, sample rate, amplitude
 - **Sample-based pulsarets** — load WAV files from SD card as custom pulsaret waveforms with adjustable playback rate
 - **Waveform display** — real-time visualization of pulsaret × window shape, envelope bar, frequency readout, gate indicator
 - **Preset serialization** — sample file selection saved/restored with presets
@@ -26,7 +26,7 @@ A [pulsar synthesis](https://en.wikipedia.org/wiki/Pulsar_synthesis) instrument 
 | **Envelope** | Attack (0.1–2000 ms), Release (1–3200 ms), Amplitude (0–100%), Glide (0–2000 ms) |
 | **Panning** | Pan 1/2/3 (-100 to +100) |
 | **Sample** | Use Sample (Off/On), Folder, File, Sample Rate (25–400%) |
-| **CV Inputs** | Pitch CV, Formant CV, Duty CV, Mask CV (bus selectors) |
+| **CV Inputs** (3 pages) | Pitch CV, Formant CV, Duty CV, Mask CV, Pulsaret CV, Window CV, Glide CV, Sample Rate CV, Amplitude CV |
 | **Routing** | MIDI Ch (1–16), Output L, Output R |
 
 Unused parameters are automatically grayed out based on context (e.g., formant 2/3 when count=1, burst params when mask mode is not burst).
@@ -71,14 +71,19 @@ The plugin uses standard disting NT parameter navigation — pots, encoders, and
 
 ### CV Inputs
 
-CV inputs are not hardwired to physical jacks. They are routable via bus selectors on the **CV Inputs** page — set each to any of the 64 busses (12 hardware inputs + 8 outputs + 44 aux), or 0 for none.
+CV inputs are routable via bus selectors on the **CV Inputs** pages — set each to any of the 64 busses (12 hardware inputs + 8 outputs + 44 aux), or 0 for none.
 
-| Parameter | Function | Range |
-|-----------|----------|-------|
-| Pitch CV | 1V/oct frequency modulation (per-sample) | any input bus |
-| Formant CV | Bipolar formant Hz modulation (±50% at ±5V) | any input bus |
-| Duty CV | Bipolar duty cycle offset (±20% at ±5V) | any input bus |
-| Mask CV | Unipolar mask amount (0–10V maps to 0–1) | any input bus |
+| Parameter | Default | Function |
+|-----------|---------|----------|
+| Pitch CV | Input 1 | 1V/oct frequency modulation (per-sample) |
+| Formant CV | Input 2 | Bipolar formant Hz modulation (±50% at ±5V) |
+| Duty CV | Input 3 | Bipolar duty cycle offset (±20% at ±5V) |
+| Mask CV | Input 4 | Unipolar mask amount (0–10V maps to 0–1) |
+| Pulsaret CV | Input 5 | Bipolar pulsaret morph (±5V sweeps full range) |
+| Window CV | Input 6 | Bipolar window morph (±5V sweeps full range) |
+| Glide CV | Input 7 | Unipolar glide time (0–10V maps to 0–2000ms) |
+| Sample Rate CV | Input 8 | Bipolar sample rate offset (±5V maps to ±2x) |
+| Amplitude CV | Input 12 | Unipolar amplitude (0–10V maps to 0–1) |
 
 ### Outputs
 

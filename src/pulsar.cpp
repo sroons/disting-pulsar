@@ -98,11 +98,20 @@ enum {
 	kParamFile,
 	kParamSampleRate,
 
-	// CV Inputs page
+	// CV Inputs page 1
 	kParamPitchCV,
 	kParamFormantCV,
 	kParamDutyCV,
 	kParamMaskCV,
+
+	// CV Inputs page 2
+	kParamPulsaretCV,
+	kParamWindowCV,
+	kParamGlideCV,
+	kParamSampleRateCV,
+
+	// CV Inputs page 3
+	kParamAmplitudeCV,
 
 	// Routing page
 	kParamMidiCh,
@@ -162,11 +171,20 @@ static const _NT_parameter parametersDefault[] = {
 	{ .name = "File",        .min = 0,   .max = 32767, .def = 0,   .unit = kNT_unitConfirm,    .scaling = kNT_scalingNone, .enumStrings = NULL },
 	{ .name = "Sample Rate", .min = 25,  .max = 400,   .def = 100, .unit = kNT_unitPercent, .scaling = kNT_scalingNone, .enumStrings = NULL },
 
-	// CV Inputs page
-	NT_PARAMETER_CV_INPUT( "Pitch CV",   0, 0 )
-	NT_PARAMETER_CV_INPUT( "Formant CV", 0, 0 )
-	NT_PARAMETER_CV_INPUT( "Duty CV",    0, 0 )
-	NT_PARAMETER_CV_INPUT( "Mask CV",    0, 0 )
+	// CV Inputs page 1
+	NT_PARAMETER_CV_INPUT( "Pitch CV",       0, 1 )
+	NT_PARAMETER_CV_INPUT( "Formant CV",     0, 2 )
+	NT_PARAMETER_CV_INPUT( "Duty CV",        0, 3 )
+	NT_PARAMETER_CV_INPUT( "Mask CV",        0, 4 )
+
+	// CV Inputs page 2
+	NT_PARAMETER_CV_INPUT( "Pulsaret CV",    0, 5 )
+	NT_PARAMETER_CV_INPUT( "Window CV",      0, 6 )
+	NT_PARAMETER_CV_INPUT( "Glide CV",       0, 7 )
+	NT_PARAMETER_CV_INPUT( "Sample Rate CV", 0, 8 )
+
+	// CV Inputs page 3
+	NT_PARAMETER_CV_INPUT( "Amplitude CV",   0, 12 )
 
 	// Routing page
 	{ .name = "MIDI Ch",     .min = 1,   .max = 16,    .def = 1,   .unit = kNT_unitNone,    .scaling = kNT_scalingNone, .enumStrings = NULL },
@@ -184,18 +202,22 @@ static const uint8_t pageMasking[]   = { kParamMaskMode, kParamMaskAmount, kPara
 static const uint8_t pageEnvelope[]  = { kParamAttack, kParamRelease, kParamAmplitude, kParamGlide };
 static const uint8_t pagePanning[]   = { kParamPan1, kParamPan2, kParamPan3 };
 static const uint8_t pageSample[]    = { kParamUseSample, kParamFolder, kParamFile, kParamSampleRate };
-static const uint8_t pageCV[]        = { kParamPitchCV, kParamFormantCV, kParamDutyCV, kParamMaskCV };
+static const uint8_t pageCV1[]       = { kParamPitchCV, kParamFormantCV, kParamDutyCV, kParamMaskCV };
+static const uint8_t pageCV2[]       = { kParamPulsaretCV, kParamWindowCV, kParamGlideCV, kParamSampleRateCV };
+static const uint8_t pageCV3[]       = { kParamAmplitudeCV };
 static const uint8_t pageRouting[]   = { kParamMidiCh, kParamOutputL, kParamOutputLMode, kParamOutputR, kParamOutputRMode };
 
 static const _NT_parameterPage pages[] = {
-	{ .name = "Synthesis", .numParams = ARRAY_SIZE(pageSynthesis), .group = 0, .unused = {0,0}, .params = pageSynthesis },
-	{ .name = "Formants",  .numParams = ARRAY_SIZE(pageFormants),  .group = 0, .unused = {0,0}, .params = pageFormants },
-	{ .name = "Masking",   .numParams = ARRAY_SIZE(pageMasking),   .group = 0, .unused = {0,0}, .params = pageMasking },
-	{ .name = "Envelope",  .numParams = ARRAY_SIZE(pageEnvelope),  .group = 0, .unused = {0,0}, .params = pageEnvelope },
-	{ .name = "Panning",   .numParams = ARRAY_SIZE(pagePanning),   .group = 0, .unused = {0,0}, .params = pagePanning },
-	{ .name = "Sample",    .numParams = ARRAY_SIZE(pageSample),    .group = 0, .unused = {0,0}, .params = pageSample },
-	{ .name = "CV Inputs", .numParams = ARRAY_SIZE(pageCV),        .group = 0, .unused = {0,0}, .params = pageCV },
-	{ .name = "Routing",   .numParams = ARRAY_SIZE(pageRouting),   .group = 0, .unused = {0,0}, .params = pageRouting },
+	{ .name = "Synthesis",  .numParams = ARRAY_SIZE(pageSynthesis), .group = 0, .unused = {0,0}, .params = pageSynthesis },
+	{ .name = "Formants",   .numParams = ARRAY_SIZE(pageFormants),  .group = 0, .unused = {0,0}, .params = pageFormants },
+	{ .name = "Masking",    .numParams = ARRAY_SIZE(pageMasking),   .group = 0, .unused = {0,0}, .params = pageMasking },
+	{ .name = "Envelope",   .numParams = ARRAY_SIZE(pageEnvelope),  .group = 0, .unused = {0,0}, .params = pageEnvelope },
+	{ .name = "Panning",    .numParams = ARRAY_SIZE(pagePanning),   .group = 0, .unused = {0,0}, .params = pagePanning },
+	{ .name = "Sample",     .numParams = ARRAY_SIZE(pageSample),    .group = 0, .unused = {0,0}, .params = pageSample },
+	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV1),       .group = 1, .unused = {0,0}, .params = pageCV1 },
+	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV2),       .group = 1, .unused = {0,0}, .params = pageCV2 },
+	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV3),       .group = 1, .unused = {0,0}, .params = pageCV3 },
+	{ .name = "Routing",    .numParams = ARRAY_SIZE(pageRouting),   .group = 0, .unused = {0,0}, .params = pageRouting },
 };
 
 static const _NT_parameterPages parameterPages = {
@@ -760,6 +782,11 @@ void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames,
 	float* cvFormant = NULL;
 	float* cvDuty = NULL;
 	float* cvMask = NULL;
+	float* cvPulsaret = NULL;
+	float* cvWindow = NULL;
+	float* cvGlide = NULL;
+	float* cvSampleRate = NULL;
+	float* cvAmplitude = NULL;
 	if (pThis->v[kParamPitchCV] > 0)
 		cvPitch = busFrames + (pThis->v[kParamPitchCV] - 1) * numFrames;
 	if (pThis->v[kParamFormantCV] > 0)
@@ -768,6 +795,16 @@ void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames,
 		cvDuty = busFrames + (pThis->v[kParamDutyCV] - 1) * numFrames;
 	if (pThis->v[kParamMaskCV] > 0)
 		cvMask = busFrames + (pThis->v[kParamMaskCV] - 1) * numFrames;
+	if (pThis->v[kParamPulsaretCV] > 0)
+		cvPulsaret = busFrames + (pThis->v[kParamPulsaretCV] - 1) * numFrames;
+	if (pThis->v[kParamWindowCV] > 0)
+		cvWindow = busFrames + (pThis->v[kParamWindowCV] - 1) * numFrames;
+	if (pThis->v[kParamGlideCV] > 0)
+		cvGlide = busFrames + (pThis->v[kParamGlideCV] - 1) * numFrames;
+	if (pThis->v[kParamSampleRateCV] > 0)
+		cvSampleRate = busFrames + (pThis->v[kParamSampleRateCV] - 1) * numFrames;
+	if (pThis->v[kParamAmplitudeCV] > 0)
+		cvAmplitude = busFrames + (pThis->v[kParamAmplitudeCV] - 1) * numFrames;
 
 	// SD card mount detection
 	bool cardMounted = NT_isSdCardMounted();
@@ -797,22 +834,36 @@ void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames,
 	int useSample = pThis->useSample;
 	float sampleRateRatio = pThis->sampleRateRatio;
 
-	// Read per-block CV averages for formant/duty/mask (single combined loop)
+	// Read per-block CV averages (single combined loop)
 	float cvFormantAvg = 0.0f;
 	float cvDutyAvg = 0.0f;
 	float cvMaskAvg = 0.0f;
-	if (cvFormant || cvDuty || cvMask)
+	float cvPulsaretAvg = 0.0f;
+	float cvWindowAvg = 0.0f;
+	float cvGlideAvg = 0.0f;
+	float cvSampleRateAvg = 0.0f;
+	float cvAmplitudeAvg = 0.0f;
 	{
 		for (int i = 0; i < numFrames; ++i)
 		{
 			if (cvFormant) cvFormantAvg += cvFormant[i];
 			if (cvDuty) cvDutyAvg += cvDuty[i];
 			if (cvMask) cvMaskAvg += cvMask[i];
+			if (cvPulsaret) cvPulsaretAvg += cvPulsaret[i];
+			if (cvWindow) cvWindowAvg += cvWindow[i];
+			if (cvGlide) cvGlideAvg += cvGlide[i];
+			if (cvSampleRate) cvSampleRateAvg += cvSampleRate[i];
+			if (cvAmplitude) cvAmplitudeAvg += cvAmplitude[i];
 		}
 		float invNumFrames = 1.0f / (float)numFrames;
 		if (cvFormant) cvFormantAvg *= invNumFrames;
 		if (cvDuty) cvDutyAvg *= invNumFrames;
 		if (cvMask) cvMaskAvg *= invNumFrames;
+		if (cvPulsaret) cvPulsaretAvg *= invNumFrames;
+		if (cvWindow) cvWindowAvg *= invNumFrames;
+		if (cvGlide) cvGlideAvg *= invNumFrames;
+		if (cvSampleRate) cvSampleRateAvg *= invNumFrames;
+		if (cvAmplitude) cvAmplitudeAvg *= invNumFrames;
 	}
 
 	// Formant CV: bipolar +-5V -> +-50% multiplier
@@ -823,6 +874,39 @@ void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames,
 	float maskCvAmount = cvMaskAvg * 0.1f;
 	if (maskCvAmount < 0.0f) maskCvAmount = 0.0f;
 	if (maskCvAmount > 1.0f) maskCvAmount = 1.0f;
+
+	// Pulsaret CV: bipolar +-5V -> +-4.5 offset on index (full range sweep)
+	pulsaretIdx += cvPulsaretAvg * 0.9f;
+	if (pulsaretIdx < 0.0f) pulsaretIdx = 0.0f;
+	if (pulsaretIdx > 9.0f) pulsaretIdx = 9.0f;
+
+	// Window CV: bipolar +-5V -> +-2.0 offset on index (full range sweep)
+	windowIdx += cvWindowAvg * 0.4f;
+	if (windowIdx < 0.0f) windowIdx = 0.0f;
+	if (windowIdx > 4.0f) windowIdx = 4.0f;
+
+	// Glide CV: unipolar 0-10V -> 0-2000ms, overrides parameter
+	if (cvGlide)
+	{
+		float glideMs = cvGlideAvg * 200.0f; // 0-10V -> 0-2000ms
+		if (glideMs < 0.0f) glideMs = 0.0f;
+		if (glideMs > 2000.0f) glideMs = 2000.0f;
+		dtc->glideCoeff = coeffFromMs(glideMs, sr);
+	}
+
+	// Sample Rate CV: bipolar +-5V -> +-2x multiplier on rate
+	sampleRateRatio += cvSampleRateAvg * 0.4f;
+	if (sampleRateRatio < 0.25f) sampleRateRatio = 0.25f;
+	if (sampleRateRatio > 4.0f) sampleRateRatio = 4.0f;
+
+	// Amplitude CV: unipolar 0-10V -> 0-1 multiplier
+	float ampCvMul = 1.0f;
+	if (cvAmplitude)
+	{
+		ampCvMul = cvAmplitudeAvg * 0.1f;
+		if (ampCvMul < 0.0f) ampCvMul = 0.0f;
+		if (ampCvMul > 1.0f) ampCvMul = 1.0f;
+	}
 
 	// Precompute per-formant pan gains
 	float panL[3], panR[3];
@@ -990,8 +1074,9 @@ void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames,
 		dtc->envValue = dtc->envTarget + envCoeff * (dtc->envValue - dtc->envTarget);
 
 		float vel = dtc->velocity * (1.0f / 127.0f);
-		sumL *= dtc->envValue * amplitude * vel;
-		sumR *= dtc->envValue * amplitude * vel;
+		float gain = dtc->envValue * amplitude * vel * ampCvMul;
+		sumL *= gain;
+		sumR *= gain;
 
 		// LeakDC highpass: y = x - x_prev + coeff * y_prev (sample-rate dependent)
 		float dcCoeff = dtc->leakDC_coeff;
