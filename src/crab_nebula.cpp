@@ -104,7 +104,7 @@ struct _pulsarDTC {
 // ============================================================
 // Parameter indices
 //
-// 36 parameters across 10 pages. Indices must match the order
+// 38 parameters across 10 pages. Indices must match the order
 // of entries in the parametersDefault[] array below.
 // ============================================================
 
@@ -166,7 +166,10 @@ enum {
 	kParamOutputR,      // Bus selector: right audio output
 	kParamOutputRMode,  // Output mode: 0=add, 1=replace
 
-	kNumParams,         // Total: 36
+	kParamGateMode,     // Enum: MIDI / Free Run
+	kParamBasePitch,    // MIDI note 0-127, default 69 (A4)
+
+	kNumParams,
 };
 
 // ============================================================
@@ -176,6 +179,7 @@ enum {
 static char const * const enumDutyMode[] = { "Manual", "Formant" };
 static char const * const enumMaskMode[] = { "Off", "Stochastic", "Burst" };
 static char const * const enumUseSample[] = { "Off", "On" };
+static char const * const enumGateMode[] = { "MIDI", "Free Run" };
 
 // ============================================================
 // Parameter definitions
@@ -233,6 +237,8 @@ static const _NT_parameter parametersDefault[] = {
 	NT_PARAMETER_CV_INPUT( "Amplitude CV",   0, 12 )
 
 	// Routing page
+	{ .name = "Gate Mode",   .min = 0,   .max = 1,     .def = 0,   .unit = kNT_unitEnum,    .scaling = kNT_scalingNone, .enumStrings = enumGateMode },
+	{ .name = "Base Pitch",  .min = 0,   .max = 127,   .def = 69,  .unit = kNT_unitMIDINote, .scaling = kNT_scalingNone, .enumStrings = NULL },
 	{ .name = "MIDI Ch",     .min = 1,   .max = 16,    .def = 1,   .unit = kNT_unitNone,    .scaling = kNT_scalingNone, .enumStrings = NULL },
 	NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE( "Output L", 1, 13 )
 	NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE( "Output R", 1, 14 )
@@ -251,7 +257,7 @@ static const uint8_t pageSample[]    = { kParamUseSample, kParamFolder, kParamFi
 static const uint8_t pageCV1[]       = { kParamPitchCV, kParamFormantCV, kParamDutyCV, kParamMaskCV };
 static const uint8_t pageCV2[]       = { kParamPulsaretCV, kParamWindowCV, kParamGlideCV, kParamSampleRateCV };
 static const uint8_t pageCV3[]       = { kParamAmplitudeCV };
-static const uint8_t pageRouting[]   = { kParamMidiCh, kParamOutputL, kParamOutputLMode, kParamOutputR, kParamOutputRMode };
+static const uint8_t pageRouting[]   = { kParamGateMode, kParamBasePitch, kParamMidiCh, kParamOutputL, kParamOutputLMode, kParamOutputR, kParamOutputRMode };
 
 static const _NT_parameterPage pages[] = {
 	{ .name = "Synthesis",  .numParams = ARRAY_SIZE(pageSynthesis), .group = 0, .unused = {0,0}, .params = pageSynthesis },
@@ -308,6 +314,8 @@ struct _pulsarAlgorithm : public _NT_algorithm
 	float pan[3];                     // -1.0 to +1.0: per-formant stereo pan position
 	int useSample;                    // 0=table pulsaret, 1=sample pulsaret
 	float sampleRateRatio;            // 0.25–4.0: sample playback rate multiplier
+	int gateMode;                     // 0=MIDI, 1=Free Run
+	float basePitchHz;                // Hz from Base Pitch param
 
 	// Async SD card sample loading state
 	_NT_wavRequest wavRequest;        // Persistent request struct for NT_readSampleFrames()
@@ -537,6 +545,8 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	alg->pan[2] = 0.5f;
 	alg->useSample = 0;
 	alg->sampleRateRatio = 1.0f;
+	alg->gateMode = 0;
+	alg->basePitchHz = 440.0f;
 	alg->cardMounted = false;
 	alg->awaitingCallback = false;
 	alg->sampleLoadedFrames = 0;
@@ -740,6 +750,40 @@ void parameterChanged(_NT_algorithm* self, int p)
 	case kParamSampleRate:
 		pThis->sampleRateRatio = pThis->v[kParamSampleRate] / 100.0f;
 		break;
+
+	case kParamGateMode:
+		pThis->gateMode = pThis->v[kParamGateMode];
+		if (algIdx >= 0)
+		{
+			NT_setParameterGrayedOut(algIdx, kParamBasePitch, pThis->gateMode == 0);
+			NT_setParameterGrayedOut(algIdx, kParamMidiCh, pThis->gateMode == 1);
+		}
+		if (pThis->gateMode == 1)
+		{
+			// Free Run: open gate, fix velocity, set pitch from Base Pitch
+			dtc->gate = true;
+			dtc->envTarget = 1.0f;
+			dtc->velocity = 127;
+			dtc->targetFundamentalHz = pThis->basePitchHz;
+			if (dtc->fundamentalHz <= 0.0f || pThis->glideMs <= 0.0f)
+				dtc->fundamentalHz = pThis->basePitchHz;
+		}
+		else
+		{
+			// MIDI: release gracefully
+			dtc->gate = false;
+			dtc->envTarget = 0.0f;
+		}
+		break;
+	case kParamBasePitch:
+		pThis->basePitchHz = 440.0f * exp2f((pThis->v[kParamBasePitch] - 69) / 12.0f);
+		if (pThis->gateMode == 1)
+		{
+			dtc->targetFundamentalHz = pThis->basePitchHz;
+			if (pThis->glideMs <= 0.0f || dtc->fundamentalHz <= 0.0f)
+				dtc->fundamentalHz = pThis->basePitchHz;
+		}
+		break;
 	}
 }
 
@@ -757,6 +801,10 @@ void midiMessage(_NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byte
 {
 	_pulsarAlgorithm* pThis = (_pulsarAlgorithm*)self;
 	_pulsarDTC* dtc = pThis->dtc;
+
+	// Free Run mode ignores MIDI notes
+	if (pThis->gateMode == 1)
+		return;
 
 	int channel = byte0 & 0x0f;
 	int status = byte0 & 0xf0;
@@ -895,6 +943,13 @@ void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames,
 
 	int numFrames = numFramesBy4 * 4;
 	float sr = (float)NT_globals.sampleRate;
+
+	// Free Run safety net: ensure gate/velocity stay set
+	if (pThis->gateMode == 1)
+	{
+		if (!dtc->gate) { dtc->gate = true; dtc->envTarget = 1.0f; }
+		if (dtc->velocity == 0) dtc->velocity = 127;
+	}
 
 	// Output bus pointers
 	float* outL = busFrames + (pThis->v[kParamOutputL] - 1) * numFrames;

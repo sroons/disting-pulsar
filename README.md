@@ -8,6 +8,7 @@ A [pulsar synthesis](https://en.wikipedia.org/wiki/Pulsar_synthesis) instrument 
 - **5 window functions** — rectangular, gaussian, Hann, exponential decay, linear decay — with continuous morphing
 - **1–3 parallel formants** with independent frequency control and constant-power stereo panning
 - **Masking** — stochastic (probability-based) and burst (on/off pattern) modes for rhythmic textures
+- **Free Run mode** — generate sound without MIDI; pitch controlled by Base Pitch parameter and Pitch CV
 - **ASR envelope** with configurable attack/release and MIDI velocity sensitivity
 - **9 CV inputs** — pitch (1V/oct), formant, duty, mask, pulsaret morph, window morph, glide, sample rate, amplitude
 - **Sample-based pulsarets** — load WAV files from SD card as custom pulsaret waveforms with adjustable playback rate
@@ -16,7 +17,7 @@ A [pulsar synthesis](https://en.wikipedia.org/wiki/Pulsar_synthesis) instrument 
 
 ## Parameters
 
-36 parameters across 10 pages:
+38 parameters across 10 pages:
 
 | Page | Parameters |
 |------|-----------|
@@ -27,15 +28,15 @@ A [pulsar synthesis](https://en.wikipedia.org/wiki/Pulsar_synthesis) instrument 
 | **Panning** | Pan 1/2/3 (-100 to +100) |
 | **Sample** | Use Sample (Off/On), Folder, File, Sample Rate (25–400%) |
 | **CV Inputs** (3 pages) | Pitch CV, Formant CV, Duty CV, Mask CV, Pulsaret CV, Window CV, Glide CV, Sample Rate CV, Amplitude CV |
-| **Routing** | MIDI Ch (1–16), Output L, Output R |
+| **Routing** | Gate Mode (MIDI/Free Run), Base Pitch (0–127, default A4), MIDI Ch (1–16), Output L, Output R |
 
-Unused parameters are automatically grayed out based on context (e.g., formant 2/3 when count=1, burst params when mask mode is not burst).
+Unused parameters are automatically grayed out based on context (e.g., formant 2/3 when count=1, burst params when mask mode is not burst, Base Pitch in MIDI mode, MIDI Ch in Free Run mode).
 
 ## Signal Chain
 
 ```
-MIDI Note → Frequency (with glide) → Master Phase Oscillator
-  → Pulse Trigger → Mask Decision (stochastic/burst)
+Pitch Source (MIDI note or Base Pitch) → Frequency (with glide)
+  → Master Phase Oscillator → Pulse Trigger → Mask Decision (stochastic/burst)
   → For each formant (1–3):
       Pulsaret (table morph or sample) × Window (table morph) × Mask
       → Constant-power pan → Stereo accumulate
@@ -106,14 +107,15 @@ Output L and Output R are routable to any output bus via the **Routing** page.
 
 ## Usage
 
-1. Add the **Pulsar** algorithm to a slot on the disting NT
-2. Set your MIDI channel on the **Routing** page and assign outputs
-3. Play notes via MIDI — the plugin responds to note on/off with velocity
-4. Shape the sound on the **Synthesis** page by sweeping Pulsaret and Window morphing controls
-5. Add parallel formants on the **Formants** page and spread them with **Panning**
-6. Create rhythmic textures with **Masking** (stochastic for random dropouts, burst for repeating patterns)
-7. Patch CV sources to modulate pitch, formant frequency, duty cycle, mask amount, pulsaret/window morph, glide, sample rate, or amplitude in real time
-8. Optionally load a WAV file from the SD card as a custom pulsaret waveform on the **Sample** page
+1. Add the **Crab Nebula** algorithm to a slot on the disting NT
+2. On the **Routing** page, choose **Gate Mode**:
+   - **MIDI** (default) — set your MIDI channel, assign outputs, and play notes via MIDI
+   - **Free Run** — sound starts immediately at the Base Pitch; no MIDI required
+3. Shape the sound on the **Synthesis** page by sweeping Pulsaret and Window morphing controls
+4. Add parallel formants on the **Formants** page and spread them with **Panning**
+5. Create rhythmic textures with **Masking** (stochastic for random dropouts, burst for repeating patterns)
+6. Patch CV sources to modulate pitch, formant frequency, duty cycle, mask amount, pulsaret/window morph, glide, sample rate, or amplitude in real time
+7. Optionally load a WAV file from the SD card as a custom pulsaret waveform on the **Sample** page
 
 ## License
 
