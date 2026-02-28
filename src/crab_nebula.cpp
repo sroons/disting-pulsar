@@ -259,7 +259,7 @@ static const uint8_t pageSample[]    = { kParamUseSample, kParamFolder, kParamFi
 static const uint8_t pageCV1[]       = { kParamPitchCV, kParamFormantCV, kParamDutyCV, kParamMaskCV };
 static const uint8_t pageCV2[]       = { kParamPulsaretCV, kParamWindowCV, kParamGlideCV, kParamSampleRateCV };
 static const uint8_t pageCV3[]       = { kParamAmplitudeCV };
-static const uint8_t pageRouting[]   = { kParamGateMode, kParamBasePitch, kParamMidiCh, kParamOutputL, kParamOutputLMode, kParamOutputR, kParamOutputRMode };
+static const uint8_t pageRouting[]   = { kParamOutputL, kParamOutputLMode, kParamOutputR, kParamOutputRMode, kParamGateMode, kParamMidiCh, kParamBasePitch };
 
 static const _NT_parameterPage pages[] = {
 	{ .name = "Synthesis",  .numParams = ARRAY_SIZE(pageSynthesis), .group = 0, .unused = {0,0}, .params = pageSynthesis },
