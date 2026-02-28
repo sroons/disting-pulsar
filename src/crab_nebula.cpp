@@ -237,11 +237,13 @@ static const _NT_parameter parametersDefault[] = {
 	NT_PARAMETER_CV_INPUT( "Amplitude CV",   0, 12 )
 
 	// Routing page
-	{ .name = "Gate Mode",   .min = 0,   .max = 1,     .def = 0,   .unit = kNT_unitEnum,    .scaling = kNT_scalingNone, .enumStrings = enumGateMode },
-	{ .name = "Base Pitch",  .min = 0,   .max = 127,   .def = 69,  .unit = kNT_unitMIDINote, .scaling = kNT_scalingNone, .enumStrings = NULL },
 	{ .name = "MIDI Ch",     .min = 1,   .max = 16,    .def = 1,   .unit = kNT_unitNone,    .scaling = kNT_scalingNone, .enumStrings = NULL },
 	NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE( "Output L", 1, 13 )
 	NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE( "Output R", 1, 14 )
+
+	// Gate mode (must be at end to match enum order)
+	{ .name = "Gate Mode",   .min = 0,   .max = 1,     .def = 0,   .unit = kNT_unitEnum,    .scaling = kNT_scalingNone, .enumStrings = enumGateMode },
+	{ .name = "Base Pitch",  .min = 0,   .max = 127,   .def = 69,  .unit = kNT_unitMIDINote, .scaling = kNT_scalingNone, .enumStrings = NULL },
 };
 
 // ============================================================
@@ -630,6 +632,7 @@ void parameterChanged(_NT_algorithm* self, int p)
 	_pulsarDTC* dtc = pThis->dtc;
 	float sr = (float)NT_globals.sampleRate;
 	int algIdx = NT_algorithmIndex(self);
+	uint32_t offset = NT_parameterOffset();
 
 	switch (p)
 	{
@@ -651,10 +654,10 @@ void parameterChanged(_NT_algorithm* self, int p)
 		// Gray out unused formant/pan params
 		if (algIdx >= 0)
 		{
-			NT_setParameterGrayedOut(algIdx, kParamFormant2Hz, pThis->formantCount < 2);
-			NT_setParameterGrayedOut(algIdx, kParamFormant3Hz, pThis->formantCount < 3);
-			NT_setParameterGrayedOut(algIdx, kParamPan2, pThis->formantCount < 2);
-			NT_setParameterGrayedOut(algIdx, kParamPan3, pThis->formantCount < 3);
+			NT_setParameterGrayedOut(algIdx, kParamFormant2Hz + offset, pThis->formantCount < 2);
+			NT_setParameterGrayedOut(algIdx, kParamFormant3Hz + offset, pThis->formantCount < 3);
+			NT_setParameterGrayedOut(algIdx, kParamPan2 + offset, pThis->formantCount < 2);
+			NT_setParameterGrayedOut(algIdx, kParamPan3 + offset, pThis->formantCount < 3);
 		}
 		break;
 	case kParamFormant1Hz:
@@ -672,9 +675,9 @@ void parameterChanged(_NT_algorithm* self, int p)
 		// Gray out burst params when not in burst mode, mask amount when off
 		if (algIdx >= 0)
 		{
-			NT_setParameterGrayedOut(algIdx, kParamMaskAmount, pThis->maskMode == 0);
-			NT_setParameterGrayedOut(algIdx, kParamBurstOn, pThis->maskMode != 2);
-			NT_setParameterGrayedOut(algIdx, kParamBurstOff, pThis->maskMode != 2);
+			NT_setParameterGrayedOut(algIdx, kParamMaskAmount + offset, pThis->maskMode == 0);
+			NT_setParameterGrayedOut(algIdx, kParamBurstOn + offset, pThis->maskMode != 2);
+			NT_setParameterGrayedOut(algIdx, kParamBurstOff + offset, pThis->maskMode != 2);
 		}
 		break;
 	case kParamMaskAmount:
@@ -717,9 +720,9 @@ void parameterChanged(_NT_algorithm* self, int p)
 		pThis->useSample = pThis->v[kParamUseSample];
 		if (algIdx >= 0)
 		{
-			NT_setParameterGrayedOut(algIdx, kParamFolder, !pThis->useSample);
-			NT_setParameterGrayedOut(algIdx, kParamFile, !pThis->useSample);
-			NT_setParameterGrayedOut(algIdx, kParamSampleRate, !pThis->useSample);
+			NT_setParameterGrayedOut(algIdx, kParamFolder + offset, !pThis->useSample);
+			NT_setParameterGrayedOut(algIdx, kParamFile + offset, !pThis->useSample);
+			NT_setParameterGrayedOut(algIdx, kParamSampleRate + offset, !pThis->useSample);
 		}
 		break;
 	case kParamFolder:
@@ -755,8 +758,8 @@ void parameterChanged(_NT_algorithm* self, int p)
 		pThis->gateMode = pThis->v[kParamGateMode];
 		if (algIdx >= 0)
 		{
-			NT_setParameterGrayedOut(algIdx, kParamBasePitch, pThis->gateMode == 0);
-			NT_setParameterGrayedOut(algIdx, kParamMidiCh, pThis->gateMode == 1);
+			NT_setParameterGrayedOut(algIdx, kParamBasePitch + offset, pThis->gateMode == 0);
+			NT_setParameterGrayedOut(algIdx, kParamMidiCh + offset, pThis->gateMode == 1);
 		}
 		if (pThis->gateMode == 1)
 		{
