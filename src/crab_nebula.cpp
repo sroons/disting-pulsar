@@ -31,7 +31,6 @@
 #include <new>
 #include <distingnt/api.h>
 #include <distingnt/wav.h>
-#include <distingnt/serialisation.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
@@ -88,17 +87,10 @@ struct _pulsarDTC {
 	uint8_t currentNote;        // Currently held MIDI note number
 	uint8_t velocity;           // Note-on velocity (0–127), scales output amplitude
 	bool gate;                  // True while a note is held
-	bool prevPulseActive;       // Previous pulse activity state (unused, reserved)
 
 	// Masking state
 	uint32_t prngState;         // LCG pseudo-random number generator state
 	uint32_t burstCounter;      // Burst pattern counter (modulo burstOn+burstOff)
-
-	// CV modulation cache (unused legacy fields, CV is read directly from busses)
-	float cvPitchOffset;
-	float cvFormantMod;
-	float cvDutyMod;
-	float cvMaskMod;
 };
 
 // ============================================================
@@ -234,7 +226,7 @@ static const _NT_parameter parametersDefault[] = {
 	NT_PARAMETER_CV_INPUT( "Sample Rate CV", 0, 8 )
 
 	// CV Inputs page 3
-	NT_PARAMETER_CV_INPUT( "Amplitude CV",   0, 12 )
+	NT_PARAMETER_CV_INPUT( "Amplitude CV",   0, 0 )
 
 	// Routing page
 	{ .name = "MIDI Ch",     .min = 1,   .max = 16,    .def = 1,   .unit = kNT_unitNone,    .scaling = kNT_scalingNone, .enumStrings = NULL },
@@ -262,16 +254,16 @@ static const uint8_t pageCV3[]       = { kParamAmplitudeCV };
 static const uint8_t pageRouting[]   = { kParamOutputL, kParamOutputLMode, kParamOutputR, kParamOutputRMode, kParamGateMode, kParamMidiCh, kParamBasePitch };
 
 static const _NT_parameterPage pages[] = {
-	{ .name = "Synthesis",  .numParams = ARRAY_SIZE(pageSynthesis), .group = 0, .unused = {0,0}, .params = pageSynthesis },
-	{ .name = "Formants",   .numParams = ARRAY_SIZE(pageFormants),  .group = 0, .unused = {0,0}, .params = pageFormants },
-	{ .name = "Masking",    .numParams = ARRAY_SIZE(pageMasking),   .group = 0, .unused = {0,0}, .params = pageMasking },
-	{ .name = "Envelope",   .numParams = ARRAY_SIZE(pageEnvelope),  .group = 0, .unused = {0,0}, .params = pageEnvelope },
-	{ .name = "Panning",    .numParams = ARRAY_SIZE(pagePanning),   .group = 0, .unused = {0,0}, .params = pagePanning },
-	{ .name = "Sample",     .numParams = ARRAY_SIZE(pageSample),    .group = 0, .unused = {0,0}, .params = pageSample },
-	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV1),       .group = 1, .unused = {0,0}, .params = pageCV1 },
-	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV2),       .group = 1, .unused = {0,0}, .params = pageCV2 },
-	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV3),       .group = 1, .unused = {0,0}, .params = pageCV3 },
-	{ .name = "Routing",    .numParams = ARRAY_SIZE(pageRouting),   .group = 0, .unused = {0,0}, .params = pageRouting },
+	{ .name = "Synthesis",  .numParams = ARRAY_SIZE(pageSynthesis), .group = 1, .params = pageSynthesis },
+	{ .name = "Formants",   .numParams = ARRAY_SIZE(pageFormants),  .group = 2, .params = pageFormants },
+	{ .name = "Masking",    .numParams = ARRAY_SIZE(pageMasking),   .group = 3, .params = pageMasking },
+	{ .name = "Envelope",   .numParams = ARRAY_SIZE(pageEnvelope),  .group = 4, .params = pageEnvelope },
+	{ .name = "Panning",    .numParams = ARRAY_SIZE(pagePanning),   .group = 5, .params = pagePanning },
+	{ .name = "Sample",     .numParams = ARRAY_SIZE(pageSample),    .group = 6, .params = pageSample },
+	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV1),       .group = 10, .params = pageCV1 },
+	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV2),       .group = 10, .params = pageCV2 },
+	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV3),       .group = 10, .params = pageCV3 },
+	{ .name = "Routing",    .numParams = ARRAY_SIZE(pageRouting),   .group = 11, .params = pageRouting },
 };
 
 static const _NT_parameterPages parameterPages = {
@@ -318,6 +310,7 @@ struct _pulsarAlgorithm : public _NT_algorithm
 	float sampleRateRatio;            // 0.25–4.0: sample playback rate multiplier
 	int gateMode;                     // 0=MIDI, 1=Free Run
 	float basePitchHz;                // Hz from Base Pitch param
+	float peakLevel;                  // Peak |output| over last block (for display)
 
 	// Async SD card sample loading state
 	_NT_wavRequest wavRequest;        // Persistent request struct for NT_readSampleFrames()
@@ -458,17 +451,21 @@ static void generateWindowTables(float tables[][kTableSize])
 
 static void wavCallback(void* callbackData, bool success)
 {
-	_pulsarAlgorithm* pThis = (_pulsarAlgorithm*)callbackData;
+	_pulsarAlgorithm* pThis = static_cast<_pulsarAlgorithm*>(callbackData);
 	pThis->awaitingCallback = false;
+	if (success)
+		pThis->sampleLoadedFrames = pThis->wavRequest.numFrames;
 }
 
 // ============================================================
 // calculateRequirements — tell the host how much memory we need
 // ============================================================
 
+static_assert( kNumParams == ARRAY_SIZE(parametersDefault) );
+
 void calculateRequirements(_NT_algorithmRequirements& req, const int32_t* specifications)
 {
-	req.numParameters = kNumParams;
+	req.numParameters = ARRAY_SIZE(parametersDefault);
 	req.sram = sizeof(_pulsarAlgorithm);
 	req.dram = sizeof(_pulsarDRAM);
 	req.dtc = sizeof(_pulsarDTC);
@@ -488,35 +485,22 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 {
 	_pulsarAlgorithm* alg = new (ptrs.sram) _pulsarAlgorithm();
 
-	alg->dtc = (_pulsarDTC*)ptrs.dtc;
-	alg->dram = (_pulsarDRAM*)ptrs.dram;
+	alg->dtc = reinterpret_cast<_pulsarDTC*>(ptrs.dtc);
+	alg->dram = reinterpret_cast<_pulsarDRAM*>(ptrs.dram);
 
 	// Copy mutable parameters
 	memcpy(alg->params, parametersDefault, sizeof(parametersDefault));
 	alg->parameters = alg->params;
 	alg->parameterPages = &parameterPages;
 
-	// Initialize DTC
+	// Initialize DTC (memset zeros all fields, then set non-zero values)
 	_pulsarDTC* dtc = alg->dtc;
 	memset(dtc, 0, sizeof(_pulsarDTC));
-	dtc->masterPhase = 0.0f;
-	dtc->fundamentalHz = 0.0f;
-	dtc->targetFundamentalHz = 0.0f;
-	dtc->glideCoeff = 0.0f;
-	dtc->envValue = 0.0f;
-	dtc->envTarget = 0.0f;
 	dtc->attackCoeff = 0.99f;
 	dtc->releaseCoeff = 0.999f;
-	dtc->gate = false;
-	dtc->prevPulseActive = false;
 	dtc->prngState = 48271u;
-	dtc->burstCounter = 0;
-	dtc->currentNote = 0;
-	dtc->velocity = 0;
-	// LeakDC coefficient: target ~25 Hz cutoff, sample-rate independent
-	float sr = (float)NT_globals.sampleRate;
-	dtc->leakDC_coeff = 1.0f - (2.0f * (float)M_PI * 25.0f / sr);
-	// Mask smoothing coefficient: ~3 ms time constant
+	float sr = static_cast<float>(NT_globals.sampleRate);
+	dtc->leakDC_coeff = 1.0f - (2.0f * static_cast<float>(M_PI) * 25.0f / sr);
 	dtc->maskSmoothCoeff = coeffFromMs(3.0f, sr);
 	for (int i = 0; i < 3; ++i)
 	{
@@ -526,32 +510,22 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	}
 
 	// Initialize algorithm cached values
-	alg->pulsaretIndex = 0.0f;
-	alg->windowIndex = 2.0f; // hann default
+	alg->windowIndex = 2.0f;
 	alg->dutyCycle = 0.5f;
-	alg->dutyMode = 0;
 	alg->formantCount = 1;
 	alg->formantHz[0] = 440.0f;
 	alg->formantHz[1] = 880.0f;
 	alg->formantHz[2] = 1320.0f;
-	alg->maskMode = 0;
 	alg->maskAmount = 0.5f;
 	alg->burstOn = 4;
 	alg->burstOff = 4;
 	alg->attackMs = 10.0f;
 	alg->releaseMs = 200.0f;
 	alg->amplitude = 0.8f;
-	alg->glideMs = 0.0f;
-	alg->pan[0] = 0.0f;
 	alg->pan[1] = -0.5f;
 	alg->pan[2] = 0.5f;
-	alg->useSample = 0;
 	alg->sampleRateRatio = 1.0f;
-	alg->gateMode = 0;
 	alg->basePitchHz = 440.0f;
-	alg->cardMounted = false;
-	alg->awaitingCallback = false;
-	alg->sampleLoadedFrames = 0;
 
 	// Setup WAV request
 	alg->wavRequest.callback = wavCallback;
@@ -563,11 +537,9 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	alg->wavRequest.startOffset = 0;
 	alg->wavRequest.dst = alg->dram->sampleBuffer;
 
-	// Generate lookup tables
+	// Generate lookup tables and clear sample buffer
 	generatePulsaretTables(alg->dram->pulsaretTables);
 	generateWindowTables(alg->dram->windowTables);
-
-	// Clear sample buffer
 	memset(alg->dram->sampleBuffer, 0, sizeof(alg->dram->sampleBuffer));
 
 	return alg;
@@ -583,7 +555,7 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 
 int parameterString(_NT_algorithm* self, int p, int v, char* buff)
 {
-	_pulsarAlgorithm* pThis = (_pulsarAlgorithm*)self;
+	_pulsarAlgorithm* pThis = static_cast<_pulsarAlgorithm*>(self);
 	int len = 0;
 
 	switch (p)
@@ -628,9 +600,9 @@ int parameterString(_NT_algorithm* self, int p, int v, char* buff)
 
 void parameterChanged(_NT_algorithm* self, int p)
 {
-	_pulsarAlgorithm* pThis = (_pulsarAlgorithm*)self;
+	_pulsarAlgorithm* pThis = static_cast<_pulsarAlgorithm*>(self);
 	_pulsarDTC* dtc = pThis->dtc;
-	float sr = (float)NT_globals.sampleRate;
+	float sr = static_cast<float>(NT_globals.sampleRate);
 	int algIdx = NT_algorithmIndex(self);
 	uint32_t offset = NT_parameterOffset();
 
@@ -735,17 +707,18 @@ void parameterChanged(_NT_algorithm* self, int p)
 	}
 		break;
 	case kParamFile:
-		if (!pThis->awaitingCallback && pThis->useSample)
+		if (!pThis->awaitingCallback)
 		{
 			_NT_wavInfo info;
 			NT_getSampleFileInfo(pThis->v[kParamFolder], pThis->v[kParamFile], info);
-			pThis->sampleLoadedFrames = info.numFrames;
-			if ((int)pThis->sampleLoadedFrames > kSampleBufferSize)
-				pThis->sampleLoadedFrames = kSampleBufferSize;
+			int numFrames = info.numFrames;
+			if (numFrames > kSampleBufferSize)
+				numFrames = kSampleBufferSize;
 
+			pThis->sampleLoadedFrames = 0;
 			pThis->wavRequest.folder = pThis->v[kParamFolder];
 			pThis->wavRequest.sample = pThis->v[kParamFile];
-			pThis->wavRequest.numFrames = pThis->sampleLoadedFrames;
+			pThis->wavRequest.numFrames = numFrames;
 			if (NT_readSampleFrames(pThis->wavRequest))
 				pThis->awaitingCallback = true;
 		}
@@ -802,11 +775,11 @@ void parameterChanged(_NT_algorithm* self, int p)
 
 void midiMessage(_NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byte2)
 {
-	_pulsarAlgorithm* pThis = (_pulsarAlgorithm*)self;
+	_pulsarAlgorithm* pThis = static_cast<_pulsarAlgorithm*>(self);
 	_pulsarDTC* dtc = pThis->dtc;
 
 	// Free Run mode ignores MIDI notes
-	if (pThis->gateMode == 1)
+	if (pThis->v[kParamGateMode] == 1)
 		return;
 
 	int channel = byte0 & 0x0f;
@@ -938,20 +911,28 @@ static inline float fastExp2f(float x)
 // while the rest of the plugin uses -Os.
 // ============================================================
 
-void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
+void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 {
-	_pulsarAlgorithm* pThis = (_pulsarAlgorithm*)self;
+	_pulsarAlgorithm* pThis = static_cast<_pulsarAlgorithm*>(self);
 	_pulsarDTC* dtc = pThis->dtc;
 	_pulsarDRAM* dram = pThis->dram;
 
 	int numFrames = numFramesBy4 * 4;
-	float sr = (float)NT_globals.sampleRate;
+	if (numFrames < 1) return;
+	float sr = static_cast<float>(NT_globals.sampleRate);
 
-	// Free Run safety net: ensure gate/velocity stay set
-	if (pThis->gateMode == 1)
+	// Free Run: read directly from v[] every block (don't depend on parameterChanged)
+	if (pThis->v[kParamGateMode] == 1)
 	{
-		if (!dtc->gate) { dtc->gate = true; dtc->envTarget = 1.0f; }
-		if (dtc->velocity == 0) dtc->velocity = 127;
+		dtc->gate = true;
+		dtc->envTarget = 1.0f;
+		dtc->velocity = 127;
+		if (dtc->targetFundamentalHz <= 0.0f)
+		{
+			float hz = 440.0f * exp2f((pThis->v[kParamBasePitch] - 69) / 12.0f);
+			dtc->targetFundamentalHz = hz;
+			dtc->fundamentalHz = hz;
+		}
 	}
 
 	// Output bus pointers
@@ -1142,6 +1123,8 @@ void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames,
 	// Mask smooth coefficient (sample-rate dependent, from DTC)
 	float maskSmoothCoeff = dtc->maskSmoothCoeff;
 
+	float peak = 0.0f;
+
 	// Sample loop
 	for (int i = 0; i < numFrames; ++i)
 	{
@@ -1233,7 +1216,7 @@ void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames,
 					else
 						formantRatio = formantRatioPrecomp[f];
 					float tablePhase = pulsaretPhase * formantRatio;
-					tablePhase -= floorf(tablePhase);
+					tablePhase -= static_cast<float>(static_cast<int>(tablePhase));
 					sample = readTableMorph(dram->pulsaretTables, pulsaretIdx, tablePhase);
 				}
 
@@ -1287,7 +1270,14 @@ void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames,
 			outR[i] = yR;
 		else
 			outR[i] += yR;
+
+		// Track peak output level for display
+		float absL = yL < 0.0f ? -yL : yL;
+		float absR = yR < 0.0f ? -yR : yR;
+		float m = absL > absR ? absL : absR;
+		if (m > peak) peak = m;
 	}
+	pThis->peakLevel = peak;
 }
 
 // ============================================================
@@ -1301,7 +1291,7 @@ void __attribute__((optimize("O2"))) step(_NT_algorithm* self, float* busFrames,
 
 bool draw(_NT_algorithm* self)
 {
-	_pulsarAlgorithm* pThis = (_pulsarAlgorithm*)self;
+	_pulsarAlgorithm* pThis = static_cast<_pulsarAlgorithm*>(self);
 	_pulsarDTC* dtc = pThis->dtc;
 	_pulsarDRAM* dram = pThis->dram;
 
@@ -1327,7 +1317,7 @@ bool draw(_NT_algorithm* self)
 		if (p < duty)
 		{
 			float pp = p / duty;
-			float formantRatio = pThis->formantHz[0] / (dtc->fundamentalHz > 0.1f ? dtc->fundamentalHz : 100.0f);
+			float formantRatio = pThis->formantHz[0] / (dtc->fundamentalHz > 0.1f ? dtc->fundamentalHz : 0.1f);
 			float tp = pp * formantRatio;
 			tp -= (int)tp;
 			if (tp < 0.0f) tp += 1.0f;
@@ -1368,71 +1358,22 @@ bool draw(_NT_algorithm* self)
 	fcBuf[2] = 0;
 	NT_drawText(waveX + waveW + 8, waveY - 16, fcBuf, 8, kNT_textLeft, kNT_textTiny);
 
+	// Gate mode indicator
+	if (pThis->v[kParamGateMode] == 1)
+		NT_drawText(barX + barW + 12, barY, "FR", 15, kNT_textLeft, kNT_textTiny);
+
+	// Peak output level bar (shows if synthesis is producing signal)
+	int pkBarX = waveX;
+	int pkBarY = waveY + waveH / 2 + 4;
+	int pkBarW = waveW;
+	int pkBarH = 3;
+	NT_drawShapeI(kNT_box, pkBarX, pkBarY, pkBarX + pkBarW, pkBarY + pkBarH, 3);
+	int pkFillW = (int)(pThis->peakLevel * pkBarW);
+	if (pkFillW > pkBarW) pkFillW = pkBarW;
+	if (pkFillW > 0)
+		NT_drawShapeI(kNT_rectangle, pkBarX, pkBarY, pkBarX + pkFillW, pkBarY + pkBarH, 15);
+
 	return false;
-}
-
-// ============================================================
-// Serialization — save/restore sample selection in presets
-//
-// The sample folder, file index, and use-sample toggle are saved
-// to the preset JSON so that loading a preset also restores the
-// selected WAV file. Other parameters are handled automatically
-// by the disting NT host via the standard parameter system.
-// ============================================================
-
-void serialise(_NT_algorithm* self, _NT_jsonStream& stream)
-{
-	_pulsarAlgorithm* pThis = (_pulsarAlgorithm*)self;
-
-	stream.addMemberName("sampleFolder");
-	stream.addNumber((int)pThis->v[kParamFolder]);
-
-	stream.addMemberName("sampleFile");
-	stream.addNumber((int)pThis->v[kParamFile]);
-
-	stream.addMemberName("useSample");
-	stream.addNumber((int)pThis->v[kParamUseSample]);
-}
-
-bool deserialise(_NT_algorithm* self, _NT_jsonParse& parse)
-{
-	int numMembers = 0;
-	if (!parse.numberOfObjectMembers(numMembers))
-		return false;
-
-	for (int i = 0; i < numMembers; ++i)
-	{
-		if (parse.matchName("sampleFolder"))
-		{
-			int val = 0;
-			if (!parse.number(val)) return false;
-			int algIdx = NT_algorithmIndex(self);
-			if (algIdx >= 0)
-				NT_setParameterFromUi(algIdx, kParamFolder + NT_parameterOffset(), (int16_t)val);
-		}
-		else if (parse.matchName("sampleFile"))
-		{
-			int val = 0;
-			if (!parse.number(val)) return false;
-			int algIdx = NT_algorithmIndex(self);
-			if (algIdx >= 0)
-				NT_setParameterFromUi(algIdx, kParamFile + NT_parameterOffset(), (int16_t)val);
-		}
-		else if (parse.matchName("useSample"))
-		{
-			int val = 0;
-			if (!parse.number(val)) return false;
-			int algIdx = NT_algorithmIndex(self);
-			if (algIdx >= 0)
-				NT_setParameterFromUi(algIdx, kParamUseSample + NT_parameterOffset(), (int16_t)val);
-		}
-		else
-		{
-			if (!parse.skipMember()) return false;
-		}
-	}
-
-	return true;
 }
 
 // ============================================================
@@ -1521,24 +1462,16 @@ static const _NT_factory factory =
 	.name = "Crab Nebula",
 	.description = "Pulsar synthesis with formants, masking, and CV",
 	.numSpecifications = 0,
-	.specifications = NULL,
-	.calculateStaticRequirements = NULL,
-	.initialise = NULL,
 	.calculateRequirements = calculateRequirements,
 	.construct = construct,
 	.parameterChanged = parameterChanged,
 	.step = step,
 	.draw = draw,
-	.midiRealtime = NULL,
 	.midiMessage = midiMessage,
 	.tags = kNT_tagInstrument,
 	.hasCustomUi = hasCustomUi,
 	.customUi = customUi,
 	.setupUi = setupUi,
-	.serialise = serialise,
-	.deserialise = deserialise,
-	.midiSysEx = NULL,
-	.parameterUiPrefix = NULL,
 	.parameterString = parameterString,
 };
 

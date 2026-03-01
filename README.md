@@ -12,12 +12,11 @@ A [pulsar synthesis](https://en.wikipedia.org/wiki/Pulsar_synthesis) instrument 
 - **ASR envelope** with configurable attack/release and MIDI velocity sensitivity
 - **9 CV inputs** — pitch (1V/oct), formant, duty, mask, pulsaret morph, window morph, glide, sample rate, amplitude
 - **Sample-based pulsarets** — load WAV files from SD card as custom pulsaret waveforms with adjustable playback rate
-- **Waveform display** — real-time visualization of pulsaret × window shape, envelope bar, frequency readout, gate indicator
-- **Preset serialization** — sample file selection saved/restored with presets
+- **Waveform display** — real-time visualization of pulsaret × window shape, envelope bar, frequency readout, gate indicator, peak output meter
 
 ## Parameters
 
-38 parameters across 10 pages:
+39 parameters across 10 pages:
 
 | Page | Parameters |
 |------|-----------|
@@ -60,11 +59,11 @@ cd disting-pulsar
 make
 ```
 
-This produces `plugins/pulsar.o`.
+This produces `plugins/crab_nebula.o`.
 
 ### Install
 
-Copy `plugins/pulsar.o` to the `plugins/` folder on your disting NT's SD card and reboot the module.
+Copy `plugins/crab_nebula.o` to the `plugins/` folder on your disting NT's SD card and reboot the module.
 
 ## Hardware Controls
 
@@ -87,7 +86,7 @@ Encoders and buttons not listed below retain their standard disting NT navigatio
 
 ### CV Inputs
 
-CV inputs are routable via bus selectors on the **CV Inputs** pages — set each to any of the 64 busses (12 hardware inputs + 8 outputs + 44 aux), or 0 for none.
+CV inputs are routable via bus selectors on the **CV Inputs** pages — set each to any of the 28 busses (1–12 inputs, 13–20 outputs, 21–28 aux), or 0 for none.
 
 | Parameter | Default | Function |
 |-----------|---------|----------|
@@ -99,7 +98,7 @@ CV inputs are routable via bus selectors on the **CV Inputs** pages — set each
 | Window CV | Input 6 | Bipolar window morph (±5V sweeps full range) |
 | Glide CV | Input 7 | Unipolar glide time (0–10V maps to 0–2000ms) |
 | Sample Rate CV | Input 8 | Bipolar sample rate offset (±5V maps to ±2x) |
-| Amplitude CV | Input 12 | Unipolar amplitude (0–10V maps to 0–1) |
+| Amplitude CV | None | Unipolar amplitude (0–10V maps to 0–1) |
 
 ### Outputs
 
