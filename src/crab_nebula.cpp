@@ -509,23 +509,34 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 		dtc->maskTarget[i] = 1.0f;
 	}
 
-	// Initialize algorithm cached values
+	// Initialize algorithm cached values (placement new does NOT zero members)
+	alg->pulsaretIndex = 0.0f;
 	alg->windowIndex = 2.0f;
 	alg->dutyCycle = 0.5f;
+	alg->dutyMode = 0;
 	alg->formantCount = 1;
 	alg->formantHz[0] = 440.0f;
 	alg->formantHz[1] = 880.0f;
 	alg->formantHz[2] = 1320.0f;
+	alg->maskMode = 0;
 	alg->maskAmount = 0.5f;
 	alg->burstOn = 4;
 	alg->burstOff = 4;
 	alg->attackMs = 10.0f;
 	alg->releaseMs = 200.0f;
 	alg->amplitude = 0.8f;
+	alg->glideMs = 0.0f;
+	alg->pan[0] = 0.0f;
 	alg->pan[1] = -0.5f;
 	alg->pan[2] = 0.5f;
+	alg->useSample = 0;
 	alg->sampleRateRatio = 1.0f;
+	alg->gateMode = 0;
 	alg->basePitchHz = 440.0f;
+	alg->peakLevel = 0.0f;
+	alg->cardMounted = false;
+	alg->awaitingCallback = false;
+	alg->sampleLoadedFrames = 0;
 
 	// Setup WAV request
 	alg->wavRequest.callback = wavCallback;
