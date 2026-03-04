@@ -66,7 +66,7 @@ Roads also introduced **masking** — selectively muting pulses within the train
 | | Burst Off | 0–16 | 4 |
 | **Envelope** | Attack | 0.1–2000 ms | 10 ms |
 | | Release | 1.0–3200 ms | 200 ms |
-| | Amplitude | 0–100% | 25% |
+| | Amplitude | 0–100% | 0% |
 | | Glide | 0–2000 ms | 0 ms |
 | **Panning** | Pan 1 | -100 to +100 | 0 |
 | | Pan 2 | -100 to +100 | -50 |
@@ -129,6 +129,30 @@ A pre-built binary is included in the repository — no toolchain required.
 
 The plugin appears in the algorithm list as "Spaluter" under the Instrument tag.
 
+## Getting Sound
+
+Spaluter starts silent by default — the base amplitude is 0%. There are two ways to get audible output:
+
+### Option A: Use CV inputs (recommended)
+
+Spaluter is designed to be played via CV. At minimum, patch signals into:
+
+1. **Input 1** (Pitch CV) — a 1V/oct pitch source (sequencer, keyboard, etc.) controls the fundamental frequency
+2. **Input 2** (Amplitude CV) — a bipolar signal (envelope, LFO, etc.) controls the output level. Positive voltage opens up the amplitude; at +5V you get 50% amplitude
+
+With just these two inputs patched, you'll hear sound. The other 10 CV inputs (duty, mask, pulsaret/window morph, formant frequencies, pan, attack, release) add further modulation when patched.
+
+### Option B: Set parameters manually
+
+If you want sound without any CV patched:
+
+1. Navigate to the **Envelope** page
+2. Raise **Amplitude** above 0% (try 50–80%)
+3. Sound will begin immediately in Free Run mode at the default pitch (C1, ~32.7 Hz)
+4. Adjust **Base Pitch** on the **Routing** page to change the fundamental frequency
+
+You can combine both approaches — set a base amplitude manually and let CV modulate it further.
+
 ## Building from Source
 
 If you want to modify the plugin and rebuild:
@@ -188,7 +212,7 @@ The custom display shows (256×64 px, standard parameter line at top):
 ## Usage
 
 1. Add the **Spaluter** algorithm to a slot on the disting NT
-2. In **Free Run** mode (default), sound starts immediately at C1 (~32.7 Hz)
+2. Patch a signal into **Input 2** (Amplitude CV) or raise **Amplitude** manually — the plugin starts silent by default
 3. Shape the sound on the **Synthesis** page by sweeping Pulsaret and Window morphing controls (or use the pots)
 4. Add parallel formants on the **Formants** page and spread them with **Panning**
 5. Create rhythmic textures with **Masking** (stochastic for random dropouts, burst for repeating patterns)

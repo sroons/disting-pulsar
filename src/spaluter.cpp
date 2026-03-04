@@ -204,7 +204,7 @@ static const _NT_parameter parametersDefault[] = {
 	// Envelope page
 	{ .name = "Attack",      .min = 1,   .max = 20000, .def = 100, .unit = kNT_unitMs,      .scaling = kNT_scaling10, .enumStrings = NULL },
 	{ .name = "Release",     .min = 10,  .max = 32000, .def = 2000,.unit = kNT_unitMs,      .scaling = kNT_scaling10, .enumStrings = NULL },
-	{ .name = "Amplitude",   .min = 0,   .max = 100,   .def = 25,  .unit = kNT_unitPercent, .scaling = kNT_scalingNone, .enumStrings = NULL },
+	{ .name = "Amplitude",   .min = 0,   .max = 100,   .def = 0,   .unit = kNT_unitPercent, .scaling = kNT_scalingNone, .enumStrings = NULL },
 	{ .name = "Glide",       .min = 0,   .max = 20000, .def = 0,   .unit = kNT_unitMs,      .scaling = kNT_scaling10, .enumStrings = NULL },
 
 	// Panning page
@@ -545,7 +545,7 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	alg->burstOff = 4;
 	alg->attackMs = 10.0f;
 	alg->releaseMs = 200.0f;
-	alg->amplitude = 0.25f;
+	alg->amplitude = 0.0f;
 	alg->glideMs = 0.0f;
 	alg->pan[0] = 0.0f;
 	alg->pan[1] = -0.5f;
@@ -561,7 +561,7 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	alg->displayFormantHz[0] = 20.0f;
 	alg->displayFormantHz[1] = 200.0f;
 	alg->displayFormantHz[2] = 400.0f;
-	alg->displayAmplitude = 0.25f;
+	alg->displayAmplitude = 0.0f;
 	alg->displayMask = 0.5f;
 	alg->cardMounted = false;
 	alg->awaitingCallback = false;
