@@ -96,7 +96,7 @@ struct _pulsarDTC {
 // ============================================================
 // Parameter indices
 //
-// 39 parameters across 10 pages. Indices must match the order
+// 42 parameters across 11 pages. Indices must match the order
 // of entries in the parametersDefault[] array below.
 // ============================================================
 
@@ -151,6 +151,11 @@ enum {
 	kParamFormant2CV,   // Bus selector: bipolar ±5V → ±4000 Hz offset
 	kParamFormant3CV,   // Bus selector: bipolar ±5V → ±4000 Hz offset
 
+	// -- CV Inputs page 4 --
+	kParamPan1CV,       // Bus selector: bipolar ±5V → ±100% pan offset
+	kParamAttackCV,     // Bus selector: bipolar ±5V → ±1000 ms attack offset
+	kParamReleaseCV,    // Bus selector: bipolar ±5V → ±1600 ms release offset
+
 	// -- Routing page --
 	kParamMidiCh,       // 1–16: MIDI channel filter
 	kParamOutputL,      // Bus selector: left audio output
@@ -186,9 +191,9 @@ static const _NT_parameter parametersDefault[] = {
 
 	// Formants page
 	{ .name = "Formant Count", .min = 1,  .max = 3,    .def = 2,   .unit = kNT_unitNone,    .scaling = kNT_scalingNone, .enumStrings = NULL },
-	{ .name = "Formant 1 Hz",  .min = 20, .max = 8000, .def = 215, .unit = kNT_unitHz,      .scaling = kNT_scalingNone, .enumStrings = NULL },
-	{ .name = "Formant 2 Hz",  .min = 20, .max = 8000, .def = 333, .unit = kNT_unitHz,      .scaling = kNT_scalingNone, .enumStrings = NULL },
-	{ .name = "Formant 3 Hz",  .min = 20, .max = 8000, .def = 1320,.unit = kNT_unitHz,      .scaling = kNT_scalingNone, .enumStrings = NULL },
+	{ .name = "Formant 1 Hz",  .min = 20, .max = 2000, .def = 20,  .unit = kNT_unitHz,      .scaling = kNT_scalingNone, .enumStrings = NULL },
+	{ .name = "Formant 2 Hz",  .min = 20, .max = 2000, .def = 200, .unit = kNT_unitHz,      .scaling = kNT_scalingNone, .enumStrings = NULL },
+	{ .name = "Formant 3 Hz",  .min = 20, .max = 2000, .def = 400, .unit = kNT_unitHz,      .scaling = kNT_scalingNone, .enumStrings = NULL },
 
 	// Masking page
 	{ .name = "Mask Mode",   .min = 0,   .max = 2,     .def = 0,   .unit = kNT_unitEnum,    .scaling = kNT_scalingNone, .enumStrings = enumMaskMode },
@@ -221,12 +226,17 @@ static const _NT_parameter parametersDefault[] = {
 	// CV Inputs page 2
 	NT_PARAMETER_CV_INPUT( "Pulsaret CV",    0, 5 )
 	NT_PARAMETER_CV_INPUT( "Window CV",      0, 6 )
-	NT_PARAMETER_CV_INPUT( "Amplitude CV",   0, 7 )
+	NT_PARAMETER_CV_INPUT( "Amplitude CV",   0, 2 )
 
 	// CV Inputs page 3
-	NT_PARAMETER_CV_INPUT( "Formant 1 CV",   0, 8 )
-	NT_PARAMETER_CV_INPUT( "Formant 2 CV",   0, 9 )
+	NT_PARAMETER_CV_INPUT( "Formant 1 CV",   0, 7 )
+	NT_PARAMETER_CV_INPUT( "Formant 2 CV",   0, 8 )
 	NT_PARAMETER_CV_INPUT( "Formant 3 CV",   0, 9 )
+
+	// CV Inputs page 4
+	NT_PARAMETER_CV_INPUT( "Pan 1 CV",       0, 10 )
+	NT_PARAMETER_CV_INPUT( "Attack CV",      0, 11 )
+	NT_PARAMETER_CV_INPUT( "Release CV",     0, 12 )
 
 	// Routing page
 	{ .name = "MIDI Ch",     .min = 1,   .max = 16,    .def = 1,   .unit = kNT_unitNone,    .scaling = kNT_scalingNone, .enumStrings = NULL },
@@ -251,6 +261,7 @@ static const uint8_t pageSample[]    = { kParamUseSample, kParamFolder, kParamFi
 static const uint8_t pageCV1[]       = { kParamPitchCV, kParamDutyCV, kParamMaskCV };
 static const uint8_t pageCV2[]       = { kParamPulsaretCV, kParamWindowCV, kParamAmplitudeCV };
 static const uint8_t pageCV3[]       = { kParamFormant1CV, kParamFormant2CV, kParamFormant3CV };
+static const uint8_t pageCV4[]       = { kParamPan1CV, kParamAttackCV, kParamReleaseCV };
 static const uint8_t pageRouting[]   = { kParamOutputL, kParamOutputLMode, kParamOutputR, kParamOutputRMode, kParamGateMode, kParamMidiCh, kParamBasePitch };
 
 static const _NT_parameterPage pages[] = {
@@ -263,6 +274,7 @@ static const _NT_parameterPage pages[] = {
 	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV1),       .group = 10, .params = pageCV1 },
 	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV2),       .group = 10, .params = pageCV2 },
 	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV3),       .group = 10, .params = pageCV3 },
+	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV4),       .group = 10, .params = pageCV4 },
 	{ .name = "Routing",    .numParams = ARRAY_SIZE(pageRouting),   .group = 11, .params = pageRouting },
 };
 
@@ -524,9 +536,9 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	alg->dutyCycle = 0.5f;
 	alg->dutyMode = 0;
 	alg->formantCount = 2;
-	alg->formantHz[0] = 215.0f;
-	alg->formantHz[1] = 333.0f;
-	alg->formantHz[2] = 1320.0f;
+	alg->formantHz[0] = 20.0f;
+	alg->formantHz[1] = 200.0f;
+	alg->formantHz[2] = 400.0f;
 	alg->maskMode = 0;
 	alg->maskAmount = 0.5f;
 	alg->burstOn = 4;
@@ -546,9 +558,9 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	alg->displayPulsaretIdx = 2.5f;
 	alg->displayWindowIdx = 0.5f;
 	alg->displayDuty = 0.5f;
-	alg->displayFormantHz[0] = 215.0f;
-	alg->displayFormantHz[1] = 333.0f;
-	alg->displayFormantHz[2] = 1320.0f;
+	alg->displayFormantHz[0] = 20.0f;
+	alg->displayFormantHz[1] = 200.0f;
+	alg->displayFormantHz[2] = 400.0f;
 	alg->displayAmplitude = 0.25f;
 	alg->displayMask = 0.5f;
 	alg->cardMounted = false;
@@ -950,10 +962,11 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	float sr = static_cast<float>(NT_globals.sampleRate);
 
 	// Free Run: read directly from v[] every block (don't depend on parameterChanged)
-	if (pThis->v[kParamGateMode] == 1)
+	bool freeRunMode = (pThis->v[kParamGateMode] == 1);
+	if (freeRunMode)
 	{
 		dtc->gate = true;
-		dtc->envTarget = 1.0f;
+		// envTarget managed per-sample for per-pulse AR envelope
 		dtc->velocity = 127;
 		if (dtc->targetFundamentalHz <= 0.0f)
 		{
@@ -979,6 +992,9 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	float* cvFormant1 = NULL;
 	float* cvFormant2 = NULL;
 	float* cvFormant3 = NULL;
+	float* cvPan1 = NULL;
+	float* cvAttack = NULL;
+	float* cvRelease = NULL;
 	if (pThis->v[kParamPitchCV] > 0)
 		cvPitch = busFrames + (pThis->v[kParamPitchCV] - 1) * numFrames;
 	if (pThis->v[kParamDutyCV] > 0)
@@ -997,6 +1013,12 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 		cvFormant2 = busFrames + (pThis->v[kParamFormant2CV] - 1) * numFrames;
 	if (pThis->v[kParamFormant3CV] > 0)
 		cvFormant3 = busFrames + (pThis->v[kParamFormant3CV] - 1) * numFrames;
+	if (pThis->v[kParamPan1CV] > 0)
+		cvPan1 = busFrames + (pThis->v[kParamPan1CV] - 1) * numFrames;
+	if (pThis->v[kParamAttackCV] > 0)
+		cvAttack = busFrames + (pThis->v[kParamAttackCV] - 1) * numFrames;
+	if (pThis->v[kParamReleaseCV] > 0)
+		cvRelease = busFrames + (pThis->v[kParamReleaseCV] - 1) * numFrames;
 
 	// SD card mount detection
 	bool cardMounted = NT_isSdCardMounted();
@@ -1035,6 +1057,9 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	float cvFormant1Avg = 0.0f;
 	float cvFormant2Avg = 0.0f;
 	float cvFormant3Avg = 0.0f;
+	float cvPan1Avg = 0.0f;
+	float cvAttackAvg = 0.0f;
+	float cvReleaseAvg = 0.0f;
 	{
 		for (int i = 0; i < numFrames; ++i)
 		{
@@ -1046,6 +1071,9 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 			if (cvFormant1) cvFormant1Avg += cvFormant1[i];
 			if (cvFormant2) cvFormant2Avg += cvFormant2[i];
 			if (cvFormant3) cvFormant3Avg += cvFormant3[i];
+			if (cvPan1) cvPan1Avg += cvPan1[i];
+			if (cvAttack) cvAttackAvg += cvAttack[i];
+			if (cvRelease) cvReleaseAvg += cvRelease[i];
 		}
 		float invNumFrames = 1.0f / (float)numFrames;
 		if (cvDuty) cvDutyAvg *= invNumFrames;
@@ -1056,6 +1084,9 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 		if (cvFormant1) cvFormant1Avg *= invNumFrames;
 		if (cvFormant2) cvFormant2Avg *= invNumFrames;
 		if (cvFormant3) cvFormant3Avg *= invNumFrames;
+		if (cvPan1) cvPan1Avg *= invNumFrames;
+		if (cvAttack) cvAttackAvg *= invNumFrames;
+		if (cvRelease) cvReleaseAvg *= invNumFrames;
 	}
 
 	// Duty CV: bipolar ±5V → ±20% offset
@@ -1081,17 +1112,37 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	if (effectiveAmplitude < 0.0f) effectiveAmplitude = 0.0f;
 	if (effectiveAmplitude > 1.0f) effectiveAmplitude = 1.0f;
 
-	// Formant 1-3 CV: bipolar ±5V → ±4000 Hz offset, clamped to [20, 8000]
+	// Formant 1-3 CV: bipolar ±5V → ±1000 Hz offset, clamped to [20, 2000]
 	float modulatedFormantHz[3];
-	modulatedFormantHz[0] = pThis->formantHz[0] + cvFormant1Avg * 800.0f;
+	modulatedFormantHz[0] = pThis->formantHz[0] + cvFormant1Avg * 200.0f;
 	if (modulatedFormantHz[0] < 20.0f) modulatedFormantHz[0] = 20.0f;
-	if (modulatedFormantHz[0] > 8000.0f) modulatedFormantHz[0] = 8000.0f;
-	modulatedFormantHz[1] = pThis->formantHz[1] + cvFormant2Avg * 800.0f;
+	if (modulatedFormantHz[0] > 2000.0f) modulatedFormantHz[0] = 2000.0f;
+	modulatedFormantHz[1] = pThis->formantHz[1] + cvFormant2Avg * 200.0f;
 	if (modulatedFormantHz[1] < 20.0f) modulatedFormantHz[1] = 20.0f;
-	if (modulatedFormantHz[1] > 8000.0f) modulatedFormantHz[1] = 8000.0f;
-	modulatedFormantHz[2] = pThis->formantHz[2] + cvFormant3Avg * 800.0f;
+	if (modulatedFormantHz[1] > 2000.0f) modulatedFormantHz[1] = 2000.0f;
+	modulatedFormantHz[2] = pThis->formantHz[2] + cvFormant3Avg * 200.0f;
 	if (modulatedFormantHz[2] < 20.0f) modulatedFormantHz[2] = 20.0f;
-	if (modulatedFormantHz[2] > 8000.0f) modulatedFormantHz[2] = 8000.0f;
+	if (modulatedFormantHz[2] > 2000.0f) modulatedFormantHz[2] = 2000.0f;
+
+	// Attack CV: bipolar ±5V → ±1000 ms offset on attack time
+	float modulatedAttackCoeff = dtc->attackCoeff;
+	if (cvAttack)
+	{
+		float modAttackMs = pThis->attackMs + cvAttackAvg * 200.0f;
+		if (modAttackMs < 0.1f) modAttackMs = 0.1f;
+		if (modAttackMs > 2000.0f) modAttackMs = 2000.0f;
+		modulatedAttackCoeff = coeffFromMs(modAttackMs, sr);
+	}
+
+	// Release CV: bipolar ±5V → ±1600 ms offset on release time
+	float modulatedReleaseCoeff = dtc->releaseCoeff;
+	if (cvRelease)
+	{
+		float modReleaseMs = pThis->releaseMs + cvReleaseAvg * 320.0f;
+		if (modReleaseMs < 1.0f) modReleaseMs = 1.0f;
+		if (modReleaseMs > 3200.0f) modReleaseMs = 3200.0f;
+		modulatedReleaseCoeff = coeffFromMs(modReleaseMs, sr);
+	}
 
 	// Update display state for draw() — reflects CV modulation in realtime
 	pThis->displayPulsaretIdx = pulsaretIdx;
@@ -1111,6 +1162,13 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	for (int f = 0; f < formantCount; ++f)
 	{
 		float p = pThis->pan[f];
+		// Pan 1 CV: bipolar ±5V → ±1.0 offset on pan position
+		if (f == 0 && cvPan1)
+		{
+			p += cvPan1Avg * 0.2f;
+			if (p < -1.0f) p = -1.0f;
+			if (p > 1.0f) p = 1.0f;
+		}
 		float angle = (p + 1.0f) * 0.25f * (float)M_PI; // 0..pi/2
 		panL[f] = cosf(angle);
 		panR[f] = sinf(angle);
@@ -1265,9 +1323,21 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 		sumL *= invFormantCount;
 		sumR *= invFormantCount;
 
-		// ASR envelope (one-pole smoother)
-		float envCoeff = dtc->gate ? dtc->attackCoeff : dtc->releaseCoeff;
-		dtc->envValue = dtc->envTarget + envCoeff * (dtc->envValue - dtc->envTarget);
+		// Envelope
+		if (freeRunMode)
+		{
+			// Per-pulse AR: attack on new pulse, release at period midpoint
+			if (newPulse) dtc->envTarget = 1.0f;
+			if (dtc->masterPhase >= 0.5f && dtc->envTarget > 0.5f) dtc->envTarget = 0.0f;
+			float envCoeff = (dtc->envTarget > 0.5f) ? modulatedAttackCoeff : modulatedReleaseCoeff;
+			dtc->envValue = dtc->envTarget + envCoeff * (dtc->envValue - dtc->envTarget);
+		}
+		else
+		{
+			// MIDI: ASR envelope (one-pole smoother)
+			float envCoeff = dtc->gate ? modulatedAttackCoeff : modulatedReleaseCoeff;
+			dtc->envValue = dtc->envTarget + envCoeff * (dtc->envValue - dtc->envTarget);
+		}
 
 		float vel = dtc->velocity * (1.0f / 127.0f);
 		float gain = dtc->envValue * effectiveAmplitude * vel;

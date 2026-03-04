@@ -41,14 +41,14 @@ Roads also introduced **masking** — selectively muting pulses within the train
 - **1–3 parallel formants** with independent frequency control, per-formant CV modulation, and constant-power stereo panning
 - **Masking** — stochastic (probability-based) and burst (on/off pattern) modes for rhythmic textures
 - **Free Run mode** (default) — generates sound immediately without MIDI; pitch set by Base Pitch parameter + Pitch CV
-- **ASR envelope** with configurable attack/release and MIDI velocity sensitivity
-- **9 bipolar CV inputs** — pitch (1V/oct), duty, mask, pulsaret morph, window morph, amplitude, formant 1/2/3 Hz
+- **Per-pulse AR envelope** in Free Run mode (retriggers each pulse); standard ASR in MIDI mode
+- **12 bipolar CV inputs** — pitch (1V/oct), duty, mask, pulsaret morph, window morph, amplitude, formant 1/2/3 Hz, pan 1, attack, release — all 12 inputs used by default
 - **Sample-based pulsarets** — load WAV files from SD card as custom pulsaret waveforms with adjustable playback rate
 - **Real-time display** — waveform preview responds to CV modulation, formant Hz readouts, amplitude %, envelope bar, frequency readout, gate indicator, peak output meter
 
 ## Parameters
 
-39 parameters across 10 pages:
+42 parameters across 11 pages:
 
 | Page | Parameter | Range | Default |
 |------|-----------|-------|---------|
@@ -57,9 +57,9 @@ Roads also introduced **masking** — selectively muting pulses within the train
 | | Duty Cycle | 1–100% | 50% |
 | | Duty Mode | Manual / Formant | Manual |
 | **Formants** | Formant Count | 1–3 | 2 |
-| | Formant 1 Hz | 20–8000 Hz | 215 Hz |
-| | Formant 2 Hz | 20–8000 Hz | 333 Hz |
-| | Formant 3 Hz | 20–8000 Hz | 1320 Hz |
+| | Formant 1 Hz | 20–2000 Hz | 20 Hz |
+| | Formant 2 Hz | 20–2000 Hz | 200 Hz |
+| | Formant 3 Hz | 20–2000 Hz | 400 Hz |
 | **Masking** | Mask Mode | Off / Stochastic / Burst | Off |
 | | Mask Amount | 0–100% | 50% |
 | | Burst On | 1–16 | 4 |
@@ -95,10 +95,13 @@ All CV inputs are **bipolar** (±5V). Each is routable to any of the 28 buses (1
 | Mask CV | Input 4 | ±5V → ±50% offset | Mask amount offset (bipolar) |
 | Pulsaret CV | Input 5 | ±5V → full range | Sweeps pulsaret morph ±4.5 |
 | Window CV | Input 6 | ±5V → full range | Sweeps window morph ±2.0 |
-| Amplitude CV | Input 7 | ±5V → ±50% offset | Amplitude offset added to base |
-| Formant 1 CV | Input 8 | ±5V → ±4000 Hz | Formant 1 frequency offset |
-| Formant 2 CV | Input 9 | ±5V → ±4000 Hz | Formant 2 frequency offset |
-| Formant 3 CV | Input 9 | ±5V → ±4000 Hz | Formant 3 frequency offset |
+| Amplitude CV | Input 2 | ±5V → ±50% offset | Amplitude offset added to base |
+| Formant 1 CV | Input 7 | ±5V → ±1000 Hz | Formant 1 frequency offset |
+| Formant 2 CV | Input 8 | ±5V → ±1000 Hz | Formant 2 frequency offset |
+| Formant 3 CV | Input 9 | ±5V → ±1000 Hz | Formant 3 frequency offset |
+| Pan 1 CV | Input 10 | ±5V → ±100% offset | Formant 1 stereo pan position |
+| Attack CV | Input 11 | ±5V → ±1000 ms | Envelope attack time offset |
+| Release CV | Input 12 | ±5V → ±1600 ms | Envelope release time offset |
 
 CV modulation is applied as an offset on top of the parameter's base value (set by knob or parameter page). All CVs except Pitch are block-rate averaged. Pitch CV is processed per-sample for accurate 1V/oct tracking.
 
@@ -110,7 +113,7 @@ Pitch Source (MIDI note or Base Pitch + Pitch CV) → Frequency (with glide)
   → For each formant (1–3):
       Pulsaret (table morph or sample) × Window (table morph) × Mask
       → Constant-power pan → Stereo accumulate
-  → Normalize → ASR Envelope × Velocity × Amplitude
+  → Normalize → Envelope (per-pulse AR in Free Run, ASR in MIDI) × Velocity × Amplitude
   → DC-blocking highpass → Soft clip (Padé tanh)
   → Output L/R
 ```
@@ -180,7 +183,7 @@ The custom display shows (256×64 px, standard parameter line at top):
 3. Shape the sound on the **Synthesis** page by sweeping Pulsaret and Window morphing controls (or use the pots)
 4. Add parallel formants on the **Formants** page and spread them with **Panning**
 5. Create rhythmic textures with **Masking** (stochastic for random dropouts, burst for repeating patterns)
-6. Patch CV sources to modulate formant frequencies, duty cycle, mask amount, pulsaret/window morph, or amplitude
+6. Patch CV sources to modulate formant frequencies, duty cycle, mask amount, pulsaret/window morph, amplitude, pan, attack, or release — all 12 inputs are assigned by default
 7. For MIDI control, switch **Gate Mode** to MIDI on the **Routing** page and set your MIDI channel
 8. Optionally load a WAV file from the SD card as a custom pulsaret waveform on the **Sample** page
 
