@@ -123,11 +123,14 @@ Pitch Source (MIDI note or Base Pitch + Pitch CV) → Frequency (with glide)
 A pre-built binary is included in the repository — no toolchain required.
 
 1. Download [`plugins/spaluter.o`](plugins/spaluter.o) from this repository (or clone the repo)
-2. Copy `spaluter.o` to the `plugins/` folder on your disting NT's SD card
-3. Reboot the module (power cycle or long-press the reset button)
-4. Add **Spaluter** to any algorithm slot
+2. Remove the flash drive from your disting NT
+3. Plug the flash drive into your computer
+4. Copy `spaluter.o` to the `programs/plug-ins` folder on the flash drive
+5. Eject the flash drive from your computer
+6. Plug the flash drive back into the disting NT
+7. Restart the module
 
-The plugin appears in the algorithm list as "Spaluter" under the Instrument tag.
+Spaluter should now appear as an available plugin to load.
 
 ## Getting Sound
 
