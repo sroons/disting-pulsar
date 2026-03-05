@@ -417,6 +417,7 @@ struct _pulsarAlgorithm : public _NT_algorithm
 	volatile float displayAmplitude;           // Effective amplitude after CV
 	volatile float displayMask;                // Effective mask amount after CV
 	volatile int displayActiveVoices;          // Number of voices currently sounding
+	volatile float displayCpuPercent;          // CPU load % (smoothed)
 
 	// Async SD card sample loading state
 	_NT_wavRequest wavRequest;        // Persistent request struct for NT_readSampleFrames()
@@ -659,6 +660,7 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	alg->displayAmplitude = 0.0f;
 	alg->displayMask = 0.5f;
 	alg->displayActiveVoices = 0;
+	alg->displayCpuPercent = 0.0f;
 	alg->cardMounted = false;
 	alg->awaitingCallback = false;
 	alg->sampleLoadedFrames = 0;
@@ -1150,6 +1152,8 @@ static inline float fastExp2f(float x)
 
 void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 {
+	uint32_t cycleStart = NT_getCpuCycleCount();
+
 	_pulsarAlgorithm* pThis = static_cast<_pulsarAlgorithm*>(self);
 	_pulsarDTC* dtc = pThis->dtc;
 	_pulsarDRAM* dram = pThis->dram;
@@ -1588,6 +1592,15 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	}
 	pThis->peakLevel = peak;
 	pThis->displayActiveVoices = activeVoices;
+
+	// CPU load: cycles used / cycles available per block
+	// STM32H743 runs at 480 MHz
+	uint32_t cyclesUsed = NT_getCpuCycleCount() - cycleStart;
+	float budgetCycles = 480000000.0f / sr * (float)numFrames;
+	float cpuRaw = (float)cyclesUsed / budgetCycles * 100.0f;
+	// Smooth with one-pole filter (~200ms time constant)
+	float prev = pThis->displayCpuPercent;
+	pThis->displayCpuPercent = prev + 0.05f * (cpuRaw - prev);
 }
 
 // ============================================================
@@ -1737,6 +1750,13 @@ bool draw(_NT_algorithm* self)
 		fbuf[aLen] = '%';
 		fbuf[aLen + 1] = 0;
 		NT_drawText(barX, barY + barH + 4, fbuf, 10, kNT_textLeft, kNT_textTiny);
+
+		// CPU load readout (bottom right)
+		fbuf[0] = 'C'; fbuf[1] = 'P'; fbuf[2] = 'U'; fbuf[3] = ':'; fbuf[4] = ' ';
+		int cpuLen = NT_floatToString(fbuf + 5, pThis->displayCpuPercent, 1);
+		fbuf[5 + cpuLen] = '%';
+		fbuf[5 + cpuLen + 1] = 0;
+		NT_drawText(barX, fmtY, fbuf, 6, kNT_textLeft, kNT_textTiny);
 	}
 
 	return false;
