@@ -8,16 +8,21 @@
 // 3 parallel formants with independent frequency, stereo panning, and
 // stochastic or burst masking create rich, evolving timbres.
 //
+// 4-voice polyphony: MIDI mode plays chords with voice stealing,
+// Free Run mode stacks harmonic intervals (octaves, fifths, etc.).
+//
 // Architecture:
 //   DRAM  (~312 KB) — pre-computed pulsaret/window lookup tables + sample buffer
-//   DTC   (~140 B)  — per-sample hot state (phase, envelope, DC filter, PRNG)
+//   DTC   (~424 B)  — per-sample hot state (4 voices × phase, envelope, DC filter, PRNG)
 //   SRAM  (~1 KB)   — algorithm struct, cached params, WAV request state
 //
 // Signal chain (per sample):
-//   Master phase oscillator → pulse trigger → mask decision
-//   → For each formant: pulsaret × window × mask → constant-power pan
-//   → Normalize → ASR envelope × velocity × amplitude
-//   → DC-blocking highpass → Padé tanh soft clip → stereo output
+//   For each voice:
+//     Master phase oscillator → pulse trigger → mask decision
+//     → For each formant: pulsaret × window × mask → constant-power pan
+//     → Normalize → envelope × velocity × amplitude
+//     → DC-blocking highpass
+//   Sum voices → normalize by voice count → Padé tanh soft clip → stereo output
 //
 // Hardware controls:
 //   Pot L = pulsaret morph, Pot C = duty cycle, Pot R = window morph
@@ -55,13 +60,12 @@ struct _pulsarDRAM {
 	float sampleBuffer[kSampleBufferSize];           // WAV sample data for sample-based pulsarets
 };
 
-// DTC: performance-critical per-sample audio state (~140 bytes)
-// Lives in Cortex-M7 tightly-coupled memory for single-cycle access.
-struct _pulsarDTC {
+// Per-voice state (~104 bytes each)
+struct _pulsarVoice {
 	// Master oscillator
 	float masterPhase;          // 0.0–1.0 sawtooth phase accumulator
 	float fundamentalHz;        // Current fundamental frequency (smoothed by glide)
-	float targetFundamentalHz;  // Target frequency from MIDI note
+	float targetFundamentalHz;  // Target frequency from MIDI note or interval
 	float glideCoeff;           // One-pole glide/portamento coefficient
 
 	// Per-formant state
@@ -93,10 +97,20 @@ struct _pulsarDTC {
 	uint32_t burstCounter;      // Burst pattern counter (modulo burstOn+burstOff)
 };
 
+// DTC: performance-critical per-sample audio state (~424 bytes)
+// Lives in Cortex-M7 tightly-coupled memory for single-cycle access.
+static const int kMaxVoices = 4;
+
+struct _pulsarDTC {
+	_pulsarVoice voices[kMaxVoices]; // 4 voice slots (~416 bytes)
+	uint8_t voiceAge[kMaxVoices];    // LRU tracking for voice stealing
+	uint8_t nextVoiceAge;            // Monotonic counter for age assignment
+};
+
 // ============================================================
 // Parameter indices
 //
-// 42 parameters across 11 pages. Indices must match the order
+// 44 parameters across 12 pages. Indices must match the order
 // of entries in the parametersDefault[] array below.
 // ============================================================
 
@@ -166,6 +180,10 @@ enum {
 	kParamGateMode,     // Enum: MIDI / Free Run
 	kParamBasePitch,    // MIDI note 0-127, default 69 (A4)
 
+	// -- Polyphony page --
+	kParamVoiceCount,   // 1–4: number of simultaneous voices
+	kParamChordType,    // Enum: chord/interval type for Free Run mode
+
 	kNumParams,
 };
 
@@ -177,6 +195,64 @@ static char const * const enumDutyMode[] = { "Manual", "Formant" };
 static char const * const enumMaskMode[] = { "Off", "Stochastic", "Burst" };
 static char const * const enumUseSample[] = { "Off", "On" };
 static char const * const enumGateMode[] = { "MIDI", "Free Run" };
+static char const * const enumChordType[] = {
+	"Unison", "Octaves", "Fifths", "Sub+Oct",
+	"Major", "Minor", "Maj7", "Min7",
+	"Sus4", "Dom7", "Dim", "Aug",
+	"Power", "Open5th"
+};
+
+// ============================================================
+// Chord/interval ratio tables for Free Run polyphony
+//
+// Harmonic entries use exact ratios. Tonal chords use equal-
+// temperament semitone ratios: 2^(st/12).
+// ============================================================
+
+#define ST(n) (1.0f)  // placeholder — filled by initChordRatios()
+
+static const int kNumChordTypes = 14;
+static float chordRatios[kNumChordTypes][kMaxVoices];
+
+// Called once from construct() to fill the ratio table
+static void initChordRatios()
+{
+	// Helper: semitone → frequency ratio
+	// Can't use constexpr with powf, so we compute at init time
+	auto st = [](int semitones) -> float {
+		return powf(2.0f, semitones / 12.0f);
+	};
+
+	// Harmonic ratios
+	float table[][kMaxVoices] = {
+		{ 1.0f, 1.0f,   1.0f,   1.0f   },  // 0: Unison
+		{ 1.0f, 2.0f,   4.0f,   8.0f   },  // 1: Octaves
+		{ 1.0f, 1.5f,   2.0f,   3.0f   },  // 2: Fifths
+		{ 0.5f, 1.0f,   2.0f,   4.0f   },  // 3: Sub+Oct
+	};
+	for (int i = 0; i < 4; ++i)
+		for (int v = 0; v < kMaxVoices; ++v)
+			chordRatios[i][v] = table[i][v];
+
+	// Tonal chords (semitone intervals from root)
+	int chords[][kMaxVoices] = {
+		{ 0, 4, 7, 12 },  // 4: Major
+		{ 0, 3, 7, 12 },  // 5: Minor
+		{ 0, 4, 7, 11 },  // 6: Maj7
+		{ 0, 3, 7, 10 },  // 7: Min7
+		{ 0, 5, 7, 12 },  // 8: Sus4
+		{ 0, 4, 7, 10 },  // 9: Dom7
+		{ 0, 3, 6, 12 },  // 10: Dim
+		{ 0, 4, 8, 12 },  // 11: Aug
+		{ 0, 7, 12, 19 }, // 12: Power
+		{ 0, 7, 12, 16 }, // 13: Open5th
+	};
+	for (int i = 0; i < 10; ++i)
+		for (int v = 0; v < kMaxVoices; ++v)
+			chordRatios[4 + i][v] = st(chords[i][v]);
+}
+
+#undef ST
 
 // ============================================================
 // Parameter definitions
@@ -243,9 +319,13 @@ static const _NT_parameter parametersDefault[] = {
 	NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE( "Output L", 1, 13 )
 	NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE( "Output R", 1, 14 )
 
-	// Gate mode (must be at end to match enum order)
+	// Gate mode (must be at end of routing to match enum order)
 	{ .name = "Gate Mode",   .min = 0,   .max = 1,     .def = 1,   .unit = kNT_unitEnum,    .scaling = kNT_scalingNone, .enumStrings = enumGateMode },
 	{ .name = "Base Pitch",  .min = 0,   .max = 127,   .def = 24,  .unit = kNT_unitMIDINote, .scaling = kNT_scalingNone, .enumStrings = NULL },
+
+	// Polyphony page
+	{ .name = "Voice Count", .min = 1,   .max = 4,     .def = 1,   .unit = kNT_unitNone,    .scaling = kNT_scalingNone, .enumStrings = NULL },
+	{ .name = "Chord Type",  .min = 0,   .max = 13,    .def = 0,   .unit = kNT_unitEnum,    .scaling = kNT_scalingNone, .enumStrings = enumChordType },
 };
 
 // ============================================================
@@ -257,6 +337,7 @@ static const uint8_t pageFormants[]  = { kParamFormantCount, kParamFormant1Hz, k
 static const uint8_t pageMasking[]   = { kParamMaskMode, kParamMaskAmount, kParamBurstOn, kParamBurstOff };
 static const uint8_t pageEnvelope[]  = { kParamAttack, kParamRelease, kParamAmplitude, kParamGlide };
 static const uint8_t pagePanning[]   = { kParamPan1, kParamPan2, kParamPan3 };
+static const uint8_t pagePolyphony[] = { kParamVoiceCount, kParamChordType };
 static const uint8_t pageSample[]    = { kParamUseSample, kParamFolder, kParamFile, kParamSampleRate };
 static const uint8_t pageCV1[]       = { kParamPitchCV, kParamDutyCV, kParamMaskCV };
 static const uint8_t pageCV2[]       = { kParamPulsaretCV, kParamWindowCV, kParamAmplitudeCV };
@@ -270,6 +351,7 @@ static const _NT_parameterPage pages[] = {
 	{ .name = "Masking",    .numParams = ARRAY_SIZE(pageMasking),   .group = 3, .params = pageMasking },
 	{ .name = "Envelope",   .numParams = ARRAY_SIZE(pageEnvelope),  .group = 4, .params = pageEnvelope },
 	{ .name = "Panning",    .numParams = ARRAY_SIZE(pagePanning),   .group = 5, .params = pagePanning },
+	{ .name = "Polyphony",  .numParams = ARRAY_SIZE(pagePolyphony), .group = 7, .params = pagePolyphony },
 	{ .name = "Sample",     .numParams = ARRAY_SIZE(pageSample),    .group = 6, .params = pageSample },
 	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV1),       .group = 10, .params = pageCV1 },
 	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV2),       .group = 10, .params = pageCV2 },
@@ -323,6 +405,8 @@ struct _pulsarAlgorithm : public _NT_algorithm
 	int gateMode;                     // 0=MIDI, 1=Free Run
 	float basePitchHz;                // Hz from Base Pitch param
 	float peakLevel;                  // Peak |output| over last block (for display)
+	int voiceCount;                   // 1–4: active voice count
+	int chordType;                  // 0–13: chord/interval type for Free Run
 
 	// Display state (written by step at block rate, read by draw)
 	// Volatile: step() and draw() may run in different interrupt contexts
@@ -332,6 +416,7 @@ struct _pulsarAlgorithm : public _NT_algorithm
 	volatile float displayFormantHz[3];        // Effective formant Hz after per-formant CV
 	volatile float displayAmplitude;           // Effective amplitude after CV
 	volatile float displayMask;                // Effective mask amount after CV
+	volatile int displayActiveVoices;          // Number of voices currently sounding
 
 	// Async SD card sample loading state
 	_NT_wavRequest wavRequest;        // Persistent request struct for NT_readSampleFrames()
@@ -498,8 +583,8 @@ void calculateRequirements(_NT_algorithmRequirements& req, const int32_t* specif
 //
 // Called once when the algorithm is loaded into a slot.
 // Sets up memory pointers, generates all lookup tables,
-// initializes DTC state, and configures the WAV request struct
-// for async sample loading.
+// initializes DTC state for all 4 voice slots, and configures
+// the WAV request struct for async sample loading.
 // ============================================================
 
 _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorithmRequirements& req, const int32_t* specifications)
@@ -514,20 +599,28 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	alg->parameters = alg->params;
 	alg->parameterPages = &parameterPages;
 
-	// Initialize DTC (memset zeros all fields, then set non-zero values)
+	// Initialize DTC (memset zeros all fields including all 4 voices)
 	_pulsarDTC* dtc = alg->dtc;
 	memset(dtc, 0, sizeof(_pulsarDTC));
-	dtc->attackCoeff = 0.99f;
-	dtc->releaseCoeff = 0.999f;
-	dtc->prngState = 48271u;
+
 	float sr = static_cast<float>(NT_globals.sampleRate);
-	dtc->leakDC_coeff = 1.0f - (2.0f * static_cast<float>(M_PI) * 25.0f / sr);
-	dtc->maskSmoothCoeff = coeffFromMs(3.0f, sr);
-	for (int i = 0; i < 3; ++i)
+	float dcCoeff = 1.0f - (2.0f * static_cast<float>(M_PI) * 25.0f / sr);
+	float maskCoeff = coeffFromMs(3.0f, sr);
+
+	for (int v = 0; v < kMaxVoices; ++v)
 	{
-		dtc->formantDuty[i] = 0.5f;
-		dtc->maskSmooth[i] = 1.0f;
-		dtc->maskTarget[i] = 1.0f;
+		_pulsarVoice& voice = dtc->voices[v];
+		voice.attackCoeff = 0.99f;
+		voice.releaseCoeff = 0.999f;
+		voice.prngState = 48271u + v * 12345u;
+		voice.leakDC_coeff = dcCoeff;
+		voice.maskSmoothCoeff = maskCoeff;
+		for (int i = 0; i < 3; ++i)
+		{
+			voice.formantDuty[i] = 0.5f;
+			voice.maskSmooth[i] = 1.0f;
+			voice.maskTarget[i] = 1.0f;
+		}
 	}
 
 	// Initialize algorithm cached values (placement new does NOT zero members)
@@ -555,6 +648,8 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	alg->gateMode = 1;
 	alg->basePitchHz = 440.0f * exp2f((24 - 69) / 12.0f);
 	alg->peakLevel = 0.0f;
+	alg->voiceCount = 1;
+	alg->chordType = 0;
 	alg->displayPulsaretIdx = 2.5f;
 	alg->displayWindowIdx = 0.5f;
 	alg->displayDuty = 0.5f;
@@ -563,6 +658,7 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	alg->displayFormantHz[2] = 400.0f;
 	alg->displayAmplitude = 0.0f;
 	alg->displayMask = 0.5f;
+	alg->displayActiveVoices = 0;
 	alg->cardMounted = false;
 	alg->awaitingCallback = false;
 	alg->sampleLoadedFrames = 0;
@@ -577,7 +673,8 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	alg->wavRequest.startOffset = 0;
 	alg->wavRequest.dst = alg->dram->sampleBuffer;
 
-	// Generate lookup tables and clear sample buffer
+	// Generate lookup tables, chord ratios, and clear sample buffer
+	initChordRatios();
 	generatePulsaretTables(alg->dram->pulsaretTables);
 	generateWindowTables(alg->dram->windowTables);
 	memset(alg->dram->sampleBuffer, 0, sizeof(alg->dram->sampleBuffer));
@@ -627,6 +724,37 @@ int parameterString(_NT_algorithm* self, int p, int v, char* buff)
 	}
 
 	return len;
+}
+
+// ============================================================
+// Helper: update Free Run voice frequencies from base pitch + intervals
+// ============================================================
+
+static void updateFreeRunVoices(_pulsarAlgorithm* pThis)
+{
+	_pulsarDTC* dtc = pThis->dtc;
+	int vc = pThis->voiceCount;
+	int intSet = pThis->chordType;
+
+	for (int v = 0; v < kMaxVoices; ++v)
+	{
+		_pulsarVoice& voice = dtc->voices[v];
+		if (v < vc)
+		{
+			float hz = pThis->basePitchHz * chordRatios[intSet][v];
+			voice.gate = true;
+			voice.envTarget = 1.0f;
+			voice.velocity = 127;
+			voice.targetFundamentalHz = hz;
+			if (voice.fundamentalHz <= 0.0f || pThis->glideMs <= 0.0f)
+				voice.fundamentalHz = hz;
+		}
+		else
+		{
+			voice.gate = false;
+			voice.envTarget = 0.0f;
+		}
+	}
 }
 
 // ============================================================
@@ -704,18 +832,21 @@ void parameterChanged(_NT_algorithm* self, int p)
 
 	case kParamAttack:
 		pThis->attackMs = pThis->v[kParamAttack] / 10.0f;
-		dtc->attackCoeff = coeffFromMs(pThis->attackMs, sr);
+		for (int v = 0; v < kMaxVoices; ++v)
+			dtc->voices[v].attackCoeff = coeffFromMs(pThis->attackMs, sr);
 		break;
 	case kParamRelease:
 		pThis->releaseMs = pThis->v[kParamRelease] / 10.0f;
-		dtc->releaseCoeff = coeffFromMs(pThis->releaseMs, sr);
+		for (int v = 0; v < kMaxVoices; ++v)
+			dtc->voices[v].releaseCoeff = coeffFromMs(pThis->releaseMs, sr);
 		break;
 	case kParamAmplitude:
 		pThis->amplitude = pThis->v[kParamAmplitude] / 100.0f;
 		break;
 	case kParamGlide:
 		pThis->glideMs = pThis->v[kParamGlide] / 10.0f;
-		dtc->glideCoeff = coeffFromMs(pThis->glideMs, sr);
+		for (int v = 0; v < kMaxVoices; ++v)
+			dtc->voices[v].glideCoeff = coeffFromMs(pThis->glideMs, sr);
 		break;
 
 	case kParamPan1:
@@ -773,43 +904,52 @@ void parameterChanged(_NT_algorithm* self, int p)
 		{
 			NT_setParameterGrayedOut(algIdx, kParamBasePitch + offset, pThis->gateMode == 0);
 			NT_setParameterGrayedOut(algIdx, kParamMidiCh + offset, pThis->gateMode == 1);
+			NT_setParameterGrayedOut(algIdx, kParamChordType + offset, pThis->gateMode == 0);
 		}
 		if (pThis->gateMode == 1)
 		{
-			// Free Run: open gate, fix velocity, set pitch from Base Pitch
-			dtc->gate = true;
-			dtc->envTarget = 1.0f;
-			dtc->velocity = 127;
-			dtc->targetFundamentalHz = pThis->basePitchHz;
-			if (dtc->fundamentalHz <= 0.0f || pThis->glideMs <= 0.0f)
-				dtc->fundamentalHz = pThis->basePitchHz;
+			// Free Run: set up all active voices with interval ratios
+			updateFreeRunVoices(pThis);
 		}
 		else
 		{
-			// MIDI: release gracefully
-			dtc->gate = false;
-			dtc->envTarget = 0.0f;
+			// MIDI: release all voices gracefully
+			for (int v = 0; v < kMaxVoices; ++v)
+			{
+				dtc->voices[v].gate = false;
+				dtc->voices[v].envTarget = 0.0f;
+			}
 		}
 		break;
 	case kParamBasePitch:
 		pThis->basePitchHz = 440.0f * exp2f((pThis->v[kParamBasePitch] - 69) / 12.0f);
 		if (pThis->gateMode == 1)
-		{
-			dtc->targetFundamentalHz = pThis->basePitchHz;
-			if (pThis->glideMs <= 0.0f || dtc->fundamentalHz <= 0.0f)
-				dtc->fundamentalHz = pThis->basePitchHz;
-		}
+			updateFreeRunVoices(pThis);
+		break;
+
+	case kParamVoiceCount:
+		pThis->voiceCount = pThis->v[kParamVoiceCount];
+		if (pThis->gateMode == 1)
+			updateFreeRunVoices(pThis);
+		break;
+	case kParamChordType:
+		pThis->chordType = pThis->v[kParamChordType];
+		if (pThis->gateMode == 1)
+			updateFreeRunVoices(pThis);
 		break;
 	}
 }
 
 // ============================================================
-// MIDI handling
+// MIDI handling — polyphonic voice allocation
 //
 // Responds to note on/off on the configured MIDI channel.
-// Note on: sets target frequency (A440 12-TET), stores velocity,
-//   opens gate. If glide is enabled, frequency slides from current.
-// Note off: closes gate (matching note only) to start release.
+// Voice allocation priority:
+//   1. Retrigger: voice already playing this note
+//   2. Free voice: released voice with lowest envelope
+//   3. Steal: oldest voice (LRU via voiceAge)
+//
+// Note off: find voice with matching note + gate, release it.
 // Velocity 0 note-on is treated as note-off per MIDI convention.
 // ============================================================
 
@@ -828,35 +968,92 @@ void midiMessage(_NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byte
 	if (channel != (pThis->v[kParamMidiCh] - 1))
 		return;
 
+	int voiceCount = pThis->voiceCount;
+
 	switch (status)
 	{
 	case 0x80: // note off
-		if (byte1 == dtc->currentNote)
+	{
+		for (int v = 0; v < voiceCount; ++v)
 		{
-			dtc->gate = false;
-			dtc->envTarget = 0.0f;
+			if (dtc->voices[v].currentNote == byte1 && dtc->voices[v].gate)
+			{
+				dtc->voices[v].gate = false;
+				dtc->voices[v].envTarget = 0.0f;
+				break;
+			}
 		}
+	}
 		break;
 	case 0x90: // note on
 		if (byte2 == 0)
 		{
 			// velocity 0 = note off
-			if (byte1 == dtc->currentNote)
+			for (int v = 0; v < voiceCount; ++v)
 			{
-				dtc->gate = false;
-				dtc->envTarget = 0.0f;
+				if (dtc->voices[v].currentNote == byte1 && dtc->voices[v].gate)
+				{
+					dtc->voices[v].gate = false;
+					dtc->voices[v].envTarget = 0.0f;
+					break;
+				}
 			}
 		}
 		else
 		{
-			dtc->currentNote = byte1;
-			dtc->velocity = byte2;
-			dtc->gate = true;
-			dtc->envTarget = 1.0f;
-			dtc->targetFundamentalHz = 440.0f * exp2f((byte1 - 69) / 12.0f);
-			// If no glide or first note, snap frequency
-			if (pThis->glideMs <= 0.0f || dtc->fundamentalHz <= 0.0f)
-				dtc->fundamentalHz = dtc->targetFundamentalHz;
+			// Find voice to assign
+			int chosen = -1;
+
+			// 1. Retrigger: voice already playing this note
+			for (int v = 0; v < voiceCount; ++v)
+			{
+				if (dtc->voices[v].currentNote == byte1 && dtc->voices[v].gate)
+				{
+					chosen = v;
+					break;
+				}
+			}
+
+			// 2. Free voice: released voice with lowest envelope
+			if (chosen < 0)
+			{
+				float lowestEnv = 2.0f;
+				for (int v = 0; v < voiceCount; ++v)
+				{
+					if (!dtc->voices[v].gate && dtc->voices[v].envValue < lowestEnv)
+					{
+						lowestEnv = dtc->voices[v].envValue;
+						chosen = v;
+					}
+				}
+			}
+
+			// 3. Steal: oldest voice (lowest voiceAge)
+			if (chosen < 0)
+			{
+				uint8_t oldestAge = dtc->voiceAge[0];
+				chosen = 0;
+				for (int v = 1; v < voiceCount; ++v)
+				{
+					int8_t diff = (int8_t)(dtc->voiceAge[v] - oldestAge);
+					if (diff < 0)
+					{
+						oldestAge = dtc->voiceAge[v];
+						chosen = v;
+					}
+				}
+			}
+
+			// Assign note to chosen voice
+			_pulsarVoice& voice = dtc->voices[chosen];
+			voice.currentNote = byte1;
+			voice.velocity = byte2;
+			voice.gate = true;
+			voice.envTarget = 1.0f;
+			voice.targetFundamentalHz = 440.0f * exp2f((byte1 - 69) / 12.0f);
+			if (pThis->glideMs <= 0.0f || voice.fundamentalHz <= 0.0f)
+				voice.fundamentalHz = voice.targetFundamentalHz;
+			dtc->voiceAge[chosen] = dtc->nextVoiceAge++;
 		}
 		break;
 	}
@@ -940,12 +1137,12 @@ static inline float fastExp2f(float x)
 // laid out contiguously (numFrames per bus). This function:
 //
 //   1. Reads CV input busses and computes per-block averages
-//   2. Precomputes per-formant duty cycles, pan gains, and
-//      formant ratios outside the sample loop
-//   3. Per sample: advances master phase, detects pulse triggers,
-//      evaluates mask, synthesizes pulsaret×window for each formant,
-//      pans to stereo, applies envelope and velocity, DC-blocks,
-//      soft-clips, and writes to output busses
+//   2. Precomputes per-formant pan gains outside the sample loop
+//   3. Per sample: for each voice, advances master phase, detects
+//      pulse triggers, evaluates mask, synthesizes pulsaret×window
+//      for each formant, pans to stereo, applies envelope and
+//      velocity, DC-blocks. Sums voices, normalizes, soft-clips,
+//      and writes to output busses.
 //
 // Compiled with -O2 (via attribute) for better loop optimization
 // while the rest of the plugin uses -Os.
@@ -961,18 +1158,25 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	if (numFrames < 1) return;
 	float sr = static_cast<float>(NT_globals.sampleRate);
 
-	// Free Run: read directly from v[] every block (don't depend on parameterChanged)
+	int voiceCount = pThis->voiceCount;
+	int chordType = pThis->chordType;
+
+	// Free Run: ensure voice state is correct every block
 	bool freeRunMode = (pThis->v[kParamGateMode] == 1);
 	if (freeRunMode)
 	{
-		dtc->gate = true;
-		// envTarget managed per-sample for per-pulse AR envelope
-		dtc->velocity = 127;
-		if (dtc->targetFundamentalHz <= 0.0f)
+		for (int v = 0; v < voiceCount; ++v)
 		{
-			float hz = 440.0f * exp2f((pThis->v[kParamBasePitch] - 69) / 12.0f);
-			dtc->targetFundamentalHz = hz;
-			dtc->fundamentalHz = hz;
+			_pulsarVoice& voice = dtc->voices[v];
+			voice.gate = true;
+			// envTarget managed per-sample for per-pulse AR envelope
+			voice.velocity = 127;
+			if (voice.targetFundamentalHz <= 0.0f)
+			{
+				float hz = pThis->basePitchHz * chordRatios[chordType][v];
+				voice.targetFundamentalHz = hz;
+				voice.fundamentalHz = hz;
+			}
 		}
 	}
 
@@ -1125,7 +1329,7 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	if (modulatedFormantHz[2] > 2000.0f) modulatedFormantHz[2] = 2000.0f;
 
 	// Attack CV: bipolar ±5V → ±1000 ms offset on attack time
-	float modulatedAttackCoeff = dtc->attackCoeff;
+	float modulatedAttackCoeff = dtc->voices[0].attackCoeff;
 	if (cvAttack)
 	{
 		float modAttackMs = pThis->attackMs + cvAttackAvg * 200.0f;
@@ -1135,7 +1339,7 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	}
 
 	// Release CV: bipolar ±5V → ±1600 ms offset on release time
-	float modulatedReleaseCoeff = dtc->releaseCoeff;
+	float modulatedReleaseCoeff = dtc->voices[0].releaseCoeff;
 	if (cvRelease)
 	{
 		float modReleaseMs = pThis->releaseMs + cvReleaseAvg * 320.0f;
@@ -1157,7 +1361,7 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	pThis->displayAmplitude = effectiveAmplitude;
 	pThis->displayMask = effectiveMask;
 
-	// Precompute per-formant pan gains
+	// Precompute per-formant pan gains (shared across all voices)
 	float panL[3], panR[3];
 	for (int f = 0; f < formantCount; ++f)
 	{
@@ -1174,210 +1378,216 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 		panR[f] = sinf(angle);
 	}
 
-	// Per-formant duty
-	float formantDuty[3];
+	// Precompute manual duty per formant (shared across voices in manual mode)
+	float manualDuty[3];
 	for (int f = 0; f < formantCount; ++f)
 	{
-		if (dutyMode == 1 && dtc->fundamentalHz > 0.0f)
-		{
-			// Formant-derived duty: duty = fundamental / formant
-			formantDuty[f] = dtc->fundamentalHz / modulatedFormantHz[f];
-			if (formantDuty[f] > 1.0f) formantDuty[f] = 1.0f;
-		}
-		else
-		{
-			formantDuty[f] = baseDuty + dutyCvOffset;
-		}
-		if (formantDuty[f] < 0.01f) formantDuty[f] = 0.01f;
-		if (formantDuty[f] > 1.0f) formantDuty[f] = 1.0f;
+		manualDuty[f] = baseDuty + dutyCvOffset;
+		if (manualDuty[f] < 0.01f) manualDuty[f] = 0.01f;
+		if (manualDuty[f] > 1.0f) manualDuty[f] = 1.0f;
 	}
 
 	float invFormantCount = 1.0f / (float)formantCount;
 	float invSr = 1.0f / sr;
-
-	// Precompute reciprocal of duty per formant
-	float invDuty[3];
-	for (int f = 0; f < formantCount; ++f)
-		invDuty[f] = 1.0f / formantDuty[f];
-
-	// Precompute formant ratio when pitch CV is not connected (constant across block)
-	float formantRatioPrecomp[3];
-	bool hasPitchCV = (cvPitch != NULL);
-	if (!hasPitchCV)
-	{
-		float invFund = 1.0f / (dtc->fundamentalHz > 0.1f ? dtc->fundamentalHz : 0.1f);
-		for (int f = 0; f < formantCount; ++f)
-			formantRatioPrecomp[f] = modulatedFormantHz[f] * invFund;
-	}
-
-	// Mask smooth coefficient (sample-rate dependent, from DTC)
-	float maskSmoothCoeff = dtc->maskSmoothCoeff;
+	float invVoiceCount = 1.0f / (float)voiceCount;
 
 	float peak = 0.0f;
+	int activeVoices = 0;
 
 	// Sample loop
 	for (int i = 0; i < numFrames; ++i)
 	{
-		// Glide: one-pole lag on frequency
-		float glideC = dtc->glideCoeff;
-		dtc->fundamentalHz = dtc->targetFundamentalHz + glideC * (dtc->fundamentalHz - dtc->targetFundamentalHz);
+		float totalL = 0.0f;
+		float totalR = 0.0f;
 
-		// Per-sample pitch CV (1V/oct)
-		float freqHz = dtc->fundamentalHz;
-		if (cvPitch)
-			freqHz *= fastExp2f(cvPitch[i]);
-
-		// Advance master phase
-		float phaseInc = freqHz * invSr;
-		if (phaseInc < 0.0f) phaseInc = 0.0f;
-		if (phaseInc > 0.5f) phaseInc = 0.5f;
-
-		dtc->masterPhase += phaseInc;
-
-		// Detect new pulse trigger (phase wrap)
-		bool newPulse = false;
-		if (dtc->masterPhase >= 1.0f)
+		for (int vi = 0; vi < voiceCount; ++vi)
 		{
-			dtc->masterPhase -= 1.0f;
-			newPulse = true;
-		}
+			_pulsarVoice& voice = dtc->voices[vi];
 
-		// Masking: update target on new pulse
-		if (maskMode > 0 && newPulse)
-		{
-			float maskGain = 1.0f;
-			if (maskMode == 1)
+			// Early exit: skip silent released voices
+			if (!voice.gate && voice.envValue < 0.0001f)
+				continue;
+
+			// Track active voices (only on first sample for display)
+			if (i == 0) ++activeVoices;
+
+			// Glide: one-pole lag on frequency
+			float glideC = voice.glideCoeff;
+			voice.fundamentalHz = voice.targetFundamentalHz + glideC * (voice.fundamentalHz - voice.targetFundamentalHz);
+
+			// Per-sample pitch CV (1V/oct) — shifts all voices proportionally
+			float freqHz = voice.fundamentalHz;
+			if (cvPitch)
+				freqHz *= fastExp2f(cvPitch[i]);
+
+			// Advance master phase
+			float phaseInc = freqHz * invSr;
+			if (phaseInc < 0.0f) phaseInc = 0.0f;
+			if (phaseInc > 0.5f) phaseInc = 0.5f;
+
+			voice.masterPhase += phaseInc;
+
+			// Detect new pulse trigger (phase wrap)
+			bool newPulse = false;
+			if (voice.masterPhase >= 1.0f)
 			{
-				// Stochastic: LCG PRNG vs threshold
-				dtc->prngState = dtc->prngState * 1664525u + 1013904223u;
-				float rnd = (float)(dtc->prngState >> 8) / 16777216.0f;
-				maskGain = (rnd < effectiveMask) ? 0.0f : 1.0f;
+				voice.masterPhase -= 1.0f;
+				newPulse = true;
 			}
-			else if (maskMode == 2)
+
+			// Masking: update target on new pulse (per-voice PRNG/burst state)
+			if (maskMode > 0 && newPulse)
 			{
-				// Burst: on for burstOn, off for burstOff
-				int total = burstOn + burstOff;
-				if (total > 0)
+				float maskGain = 1.0f;
+				if (maskMode == 1)
 				{
-					dtc->burstCounter = (dtc->burstCounter + 1) % (uint32_t)total;
-					maskGain = (dtc->burstCounter < (uint32_t)burstOn) ? 1.0f : 0.0f;
+					// Stochastic: LCG PRNG vs threshold
+					voice.prngState = voice.prngState * 1664525u + 1013904223u;
+					float rnd = (float)(voice.prngState >> 8) / 16777216.0f;
+					maskGain = (rnd < effectiveMask) ? 0.0f : 1.0f;
 				}
-			}
-			for (int f = 0; f < formantCount; ++f)
-				dtc->maskTarget[f] = maskGain;
-		}
-
-		// Smooth mask continuously every sample toward target
-		for (int f = 0; f < formantCount; ++f)
-			dtc->maskSmooth[f] = dtc->maskTarget[f] + maskSmoothCoeff * (dtc->maskSmooth[f] - dtc->maskTarget[f]);
-
-		// Synthesis: accumulate formants
-		float sumL = 0.0f;
-		float sumR = 0.0f;
-		float phase = dtc->masterPhase;
-
-		for (int f = 0; f < formantCount; ++f)
-		{
-			float duty = formantDuty[f];
-
-			if (phase < duty)
-			{
-				float pulsaretPhase = phase * invDuty[f];
-				float sample;
-
-				if (useSample && pThis->sampleLoadedFrames >= 2)
+				else if (maskMode == 2)
 				{
-					// Sample-based pulsaret
-					float samplePos = pulsaretPhase * (pThis->sampleLoadedFrames - 1) * sampleRateRatio;
-					int sIdx = (int)samplePos;
-					float sFrac = samplePos - sIdx;
-					if (sIdx < 0) sIdx = 0;
-					if (sIdx >= pThis->sampleLoadedFrames - 1) sIdx = pThis->sampleLoadedFrames - 2;
-					sample = dram->sampleBuffer[sIdx] + sFrac * (dram->sampleBuffer[sIdx + 1] - dram->sampleBuffer[sIdx]);
+					// Burst: on for burstOn, off for burstOff
+					int total = burstOn + burstOff;
+					if (total > 0)
+					{
+						voice.burstCounter = (voice.burstCounter + 1) % (uint32_t)total;
+						maskGain = (voice.burstCounter < (uint32_t)burstOn) ? 1.0f : 0.0f;
+					}
+				}
+				for (int f = 0; f < formantCount; ++f)
+					voice.maskTarget[f] = maskGain;
+			}
+
+			// Smooth mask continuously every sample toward target
+			float maskCoeff = voice.maskSmoothCoeff;
+			for (int f = 0; f < formantCount; ++f)
+				voice.maskSmooth[f] = voice.maskTarget[f] + maskCoeff * (voice.maskSmooth[f] - voice.maskTarget[f]);
+
+			// Synthesis: accumulate formants
+			float sumL = 0.0f;
+			float sumR = 0.0f;
+			float phase = voice.masterPhase;
+
+			for (int f = 0; f < formantCount; ++f)
+			{
+				// Compute per-voice formant duty
+				float duty;
+				if (dutyMode == 1 && freqHz > 0.0f)
+				{
+					duty = freqHz / modulatedFormantHz[f];
+					if (duty > 1.0f) duty = 1.0f;
 				}
 				else
 				{
-					// Table-based pulsaret with morphing
-					float formantRatio;
-					if (hasPitchCV)
-						formantRatio = modulatedFormantHz[f] / (dtc->fundamentalHz > 0.1f ? dtc->fundamentalHz : 0.1f);
-					else
-						formantRatio = formantRatioPrecomp[f];
-					float tablePhase = pulsaretPhase * formantRatio;
-					tablePhase -= static_cast<float>(static_cast<int>(tablePhase));
-					sample = readTableMorph(dram->pulsaretTables, pulsaretIdx, tablePhase);
+					duty = manualDuty[f];
 				}
 
-				// Window with morphing
-				float window = readWindowMorph(dram->windowTables, windowIdx, pulsaretPhase);
+				if (phase < duty)
+				{
+					float pulsaretPhase = phase / duty;
+					float sample;
 
-				float s = sample * window * dtc->maskSmooth[f];
+					if (useSample && pThis->sampleLoadedFrames >= 2)
+					{
+						// Sample-based pulsaret
+						float samplePos = pulsaretPhase * (pThis->sampleLoadedFrames - 1) * sampleRateRatio;
+						int sIdx = (int)samplePos;
+						float sFrac = samplePos - sIdx;
+						if (sIdx < 0) sIdx = 0;
+						if (sIdx >= pThis->sampleLoadedFrames - 1) sIdx = pThis->sampleLoadedFrames - 2;
+						sample = dram->sampleBuffer[sIdx] + sFrac * (dram->sampleBuffer[sIdx + 1] - dram->sampleBuffer[sIdx]);
+					}
+					else
+					{
+						// Table-based pulsaret with morphing
+						float formantRatio = modulatedFormantHz[f] / (freqHz > 0.1f ? freqHz : 0.1f);
+						float tablePhase = pulsaretPhase * formantRatio;
+						tablePhase -= static_cast<float>(static_cast<int>(tablePhase));
+						sample = readTableMorph(dram->pulsaretTables, pulsaretIdx, tablePhase);
+					}
 
-				// Pan to stereo (constant power)
-				sumL += s * panL[f];
-				sumR += s * panR[f];
+					// Window with morphing
+					float window = readWindowMorph(dram->windowTables, windowIdx, pulsaretPhase);
+
+					float s = sample * window * voice.maskSmooth[f];
+
+					// Pan to stereo (constant power)
+					sumL += s * panL[f];
+					sumR += s * panR[f];
+				}
 			}
+
+			// Normalize by formant count
+			sumL *= invFormantCount;
+			sumR *= invFormantCount;
+
+			// Envelope
+			if (freeRunMode)
+			{
+				// Per-pulse AR: attack on new pulse, release at period midpoint
+				if (newPulse) voice.envTarget = 1.0f;
+				if (voice.masterPhase >= 0.5f && voice.envTarget > 0.5f) voice.envTarget = 0.0f;
+				float envCoeff = (voice.envTarget > 0.5f) ? modulatedAttackCoeff : modulatedReleaseCoeff;
+				voice.envValue = voice.envTarget + envCoeff * (voice.envValue - voice.envTarget);
+			}
+			else
+			{
+				// MIDI: ASR envelope (one-pole smoother)
+				float envCoeff = voice.gate ? modulatedAttackCoeff : modulatedReleaseCoeff;
+				voice.envValue = voice.envTarget + envCoeff * (voice.envValue - voice.envTarget);
+			}
+
+			float vel = voice.velocity * (1.0f / 127.0f);
+			float gain = voice.envValue * effectiveAmplitude * vel;
+			sumL *= gain;
+			sumR *= gain;
+
+			// DC-blocking highpass per voice (independent filter state)
+			float dcCoeff = voice.leakDC_coeff;
+			float xL = sumL;
+			float yL = xL - voice.leakDC_xL + dcCoeff * voice.leakDC_yL;
+			voice.leakDC_xL = xL;
+			voice.leakDC_yL = yL;
+
+			float xR = sumR;
+			float yR = xR - voice.leakDC_xR + dcCoeff * voice.leakDC_yR;
+			voice.leakDC_xR = xR;
+			voice.leakDC_yR = yR;
+
+			// Accumulate into voice sum
+			totalL += yL;
+			totalR += yR;
 		}
 
-		// Normalize by formant count
-		sumL *= invFormantCount;
-		sumR *= invFormantCount;
+		// Normalize by voice count (param value, not active count — avoids volume jumps)
+		totalL *= invVoiceCount;
+		totalR *= invVoiceCount;
 
-		// Envelope
-		if (freeRunMode)
-		{
-			// Per-pulse AR: attack on new pulse, release at period midpoint
-			if (newPulse) dtc->envTarget = 1.0f;
-			if (dtc->masterPhase >= 0.5f && dtc->envTarget > 0.5f) dtc->envTarget = 0.0f;
-			float envCoeff = (dtc->envTarget > 0.5f) ? modulatedAttackCoeff : modulatedReleaseCoeff;
-			dtc->envValue = dtc->envTarget + envCoeff * (dtc->envValue - dtc->envTarget);
-		}
-		else
-		{
-			// MIDI: ASR envelope (one-pole smoother)
-			float envCoeff = dtc->gate ? modulatedAttackCoeff : modulatedReleaseCoeff;
-			dtc->envValue = dtc->envTarget + envCoeff * (dtc->envValue - dtc->envTarget);
-		}
-
-		float vel = dtc->velocity * (1.0f / 127.0f);
-		float gain = dtc->envValue * effectiveAmplitude * vel;
-		sumL *= gain;
-		sumR *= gain;
-
-		// LeakDC highpass: y = x - x_prev + coeff * y_prev (sample-rate dependent)
-		float dcCoeff = dtc->leakDC_coeff;
-		float xL = sumL;
-		float yL = xL - dtc->leakDC_xL + dcCoeff * dtc->leakDC_yL;
-		dtc->leakDC_xL = xL;
-		dtc->leakDC_yL = yL;
-
-		float xR = sumR;
-		float yR = xR - dtc->leakDC_xR + dcCoeff * dtc->leakDC_yR;
-		dtc->leakDC_xR = xR;
-		dtc->leakDC_yR = yR;
-
-		// Soft clip (fast Pade tanh)
-		yL = fastTanh(yL);
-		yR = fastTanh(yR);
+		// Soft clip once on summed output (fast Pade tanh)
+		totalL = fastTanh(totalL);
+		totalR = fastTanh(totalR);
 
 		// Write to output
 		if (replaceL)
-			outL[i] = yL;
+			outL[i] = totalL;
 		else
-			outL[i] += yL;
+			outL[i] += totalL;
 
 		if (replaceR)
-			outR[i] = yR;
+			outR[i] = totalR;
 		else
-			outR[i] += yR;
+			outR[i] += totalR;
 
 		// Track peak output level for display
-		float absL = yL < 0.0f ? -yL : yL;
-		float absR = yR < 0.0f ? -yR : yR;
+		float absL = totalL < 0.0f ? -totalL : totalL;
+		float absR = totalR < 0.0f ? -totalR : totalR;
 		float m = absL > absR ? absL : absR;
 		if (m > peak) peak = m;
 	}
 	pThis->peakLevel = peak;
+	pThis->displayActiveVoices = activeVoices;
 }
 
 // ============================================================
@@ -1385,7 +1595,8 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 //
 // Called by the host to render the algorithm's display (256×64 px).
 // Draws: pulsaret×window waveform preview, fundamental frequency
-// readout, envelope level bar, gate indicator, formant count.
+// readout, envelope level bar, gate indicator, formant count,
+// voice count, and interval set label.
 // Returns false to keep the standard parameter line at the top.
 // ============================================================
 
@@ -1416,7 +1627,7 @@ bool draw(_NT_algorithm* self)
 		if (p < duty)
 		{
 			float pp = p / duty;
-			float formantRatio = pThis->displayFormantHz[0] / (dtc->fundamentalHz > 0.1f ? dtc->fundamentalHz : 0.1f);
+			float formantRatio = pThis->displayFormantHz[0] / (dtc->voices[0].fundamentalHz > 0.1f ? dtc->voices[0].fundamentalHz : 0.1f);
 			float tp = pp * formantRatio;
 			tp -= (int)tp;
 			if (tp < 0.0f) tp += 1.0f;
@@ -1429,37 +1640,62 @@ bool draw(_NT_algorithm* self)
 		prevY = pixY;
 	}
 
-	// Frequency readout
+	// Frequency readout (voice 0)
 	char buf[32];
-	int len = NT_floatToString(buf, dtc->fundamentalHz, 1);
+	int len = NT_floatToString(buf, dtc->voices[0].fundamentalHz, 1);
 	buf[len] = 0;
 	NT_drawText(waveX + waveW + 8, waveY - 8, buf, 15, kNT_textLeft, kNT_textTiny);
 	NT_drawText(waveX + waveW + 8, waveY, "Hz", 10, kNT_textLeft, kNT_textTiny);
 
-	// Envelope level bar
+	// Envelope level bar (max envelope across all voices)
 	int barX = waveX + waveW + 8;
 	int barY = waveY + 8;
 	int barW = 30;
 	int barH = 4;
 	NT_drawShapeI(kNT_box, barX, barY, barX + barW, barY + barH, 5);
-	int fillW = (int)(dtc->envValue * barW);
+	float maxEnv = 0.0f;
+	bool anyGate = false;
+	for (int v = 0; v < pThis->voiceCount; ++v)
+	{
+		if (dtc->voices[v].envValue > maxEnv) maxEnv = dtc->voices[v].envValue;
+		if (dtc->voices[v].gate) anyGate = true;
+	}
+	int fillW = (int)(maxEnv * barW);
 	if (fillW > 0)
 		NT_drawShapeI(kNT_rectangle, barX, barY, barX + fillW, barY + barH, 15);
 
-	// Gate indicator
-	if (dtc->gate)
+	// Gate indicator (lit if any voice gated)
+	if (anyGate)
 		NT_drawShapeI(kNT_rectangle, barX + barW + 4, barY, barX + barW + 8, barY + barH, 15);
 
-	// Formant count
+	// Formant count + voice count
 	char fcBuf[8];
 	fcBuf[0] = '0' + pThis->formantCount;
 	fcBuf[1] = 'F';
-	fcBuf[2] = 0;
+	fcBuf[2] = ' ';
+	fcBuf[3] = '0' + pThis->voiceCount;
+	fcBuf[4] = 'V';
+	fcBuf[5] = 0;
 	NT_drawText(waveX + waveW + 8, waveY - 16, fcBuf, 8, kNT_textLeft, kNT_textTiny);
 
 	// Gate mode indicator
 	if (pThis->v[kParamGateMode] == 1)
 		NT_drawText(barX + barW + 12, barY, "FR", 15, kNT_textLeft, kNT_textTiny);
+
+	// Chord type label (Free Run mode, dimmed when only 1 voice)
+	if (pThis->v[kParamGateMode] == 1)
+	{
+		static const char* chordLabels[] = {
+			"UNI", "OCT", "5TH", "SUB",
+			"MAJ", "MIN", "MA7", "MI7",
+			"SU4", "DM7", "DIM", "AUG",
+			"PWR", "OP5"
+		};
+		int ct = pThis->chordType;
+		int bright = (pThis->voiceCount > 1) ? 10 : 4;
+		if (ct >= 0 && ct < kNumChordTypes)
+			NT_drawText(barX + barW + 12, barY + barH + 4, chordLabels[ct], bright, kNT_textLeft, kNT_textTiny);
+	}
 
 	// Peak output level bar (shows if synthesis is producing signal)
 	int pkBarX = waveX;
@@ -1518,6 +1754,8 @@ bool draw(_NT_algorithm* self)
 //   Pot R:             Window morph (0.0–4.0)
 //   Encoder Button L:  Cycle mask mode (Off → Stochastic → Burst)
 //   Encoder Button R:  Cycle formant count (1 → 2 → 3)
+//   Button 3:          Cycle voice count (1 → 2 → 3 → 4)
+//   Button 4:          Cycle chord type (14 options)
 //
 // setupUi() syncs pot soft-takeover positions so pots don't
 // jump when first touched after switching to this algorithm.
@@ -1525,7 +1763,7 @@ bool draw(_NT_algorithm* self)
 
 uint32_t hasCustomUi(_NT_algorithm* self)
 {
-	return kNT_potL | kNT_potC | kNT_potR | kNT_encoderButtonL | kNT_encoderButtonR;
+	return kNT_potL | kNT_potC | kNT_potR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_button3 | kNT_button4;
 }
 
 void customUi(_NT_algorithm* self, const _NT_uiData& data)
@@ -1567,6 +1805,20 @@ void customUi(_NT_algorithm* self, const _NT_uiData& data)
 	{
 		int count = self->v[kParamFormantCount] % 3 + 1;
 		NT_setParameterFromUi(algIdx, kParamFormantCount + offset, (int16_t)count);
+	}
+
+	// Button 3: cycle voice count (1 -> 2 -> 3 -> 4 -> 1)
+	if ((data.controls & kNT_button3) && !(data.lastButtons & kNT_button3))
+	{
+		int vc = self->v[kParamVoiceCount] % 4 + 1;
+		NT_setParameterFromUi(algIdx, kParamVoiceCount + offset, (int16_t)vc);
+	}
+
+	// Button 4: cycle chord type (0 -> 1 -> ... -> 13 -> 0)
+	if ((data.controls & kNT_button4) && !(data.lastButtons & kNT_button4))
+	{
+		int ct = (self->v[kParamChordType] + 1) % kNumChordTypes;
+		NT_setParameterFromUi(algIdx, kParamChordType + offset, (int16_t)ct);
 	}
 }
 

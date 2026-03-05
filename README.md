@@ -40,6 +40,8 @@ Roads also introduced **masking** — selectively muting pulses within the train
 - **5 window functions** — rectangular, Gaussian, Hann, exponential decay, linear decay — with continuous morphing
 - **1–3 parallel formants** with independent frequency control, per-formant CV modulation, and constant-power stereo panning
 - **Masking** — stochastic (probability-based) and burst (on/off pattern) modes for rhythmic textures
+- **1–4 voice polyphony** — play chords in MIDI mode (with voice stealing) or stack harmonic intervals in Free Run mode
+- **14 chord types** — Unison, Octaves, Fifths, Sub+Oct, Major, Minor, Maj7, Min7, Sus4, Dom7, Dim, Aug, Power, Open5th — for Free Run interval stacking
 - **Free Run mode** (default) — generates sound immediately without MIDI; pitch set by Base Pitch parameter + Pitch CV
 - **Per-pulse AR envelope** in Free Run mode (retriggers each pulse); standard ASR in MIDI mode
 - **12 bipolar CV inputs** — pitch (1V/oct), duty, mask, pulsaret morph, window morph, amplitude, formant 1/2/3 Hz, pan 1, attack, release — all 12 inputs used by default
@@ -48,7 +50,7 @@ Roads also introduced **masking** — selectively muting pulses within the train
 
 ## Parameters
 
-42 parameters across 11 pages:
+44 parameters across 12 pages:
 
 | Page | Parameter | Range | Default |
 |------|-----------|-------|---------|
@@ -71,6 +73,8 @@ Roads also introduced **masking** — selectively muting pulses within the train
 | **Panning** | Pan 1 | -100 to +100 | 0 |
 | | Pan 2 | -100 to +100 | -50 |
 | | Pan 3 | -100 to +100 | +50 |
+| **Polyphony** | Voice Count | 1–4 | 1 |
+| | Chord Type | Unison / Octaves / Fifths / Sub+Oct / Major / Minor / Maj7 / Min7 / Sus4 / Dom7 / Dim / Aug / Power / Open5th | Unison |
 | **Sample** | Use Sample | Off / On | Off |
 | | Folder | (SD card) | — |
 | | File | (SD card) | — |
@@ -82,7 +86,7 @@ Roads also introduced **masking** — selectively muting pulses within the train
 | | Output L | Bus 1–28 | Bus 13 |
 | | Output R | Bus 1–28 | Bus 14 |
 
-Unused parameters are automatically grayed out based on context (e.g., Formant 2/3 Hz when count=1, burst params when mask mode is not burst, Base Pitch in MIDI mode, MIDI Ch in Free Run mode).
+Unused parameters are automatically grayed out based on context (e.g., Formant 2/3 Hz when count=1, burst params when mask mode is not burst, Base Pitch in MIDI mode, MIDI Ch in Free Run mode, Chord Type in MIDI mode).
 
 ## CV Inputs
 
@@ -108,13 +112,15 @@ CV modulation is applied as an offset on top of the parameter's base value (set 
 ## Signal Chain
 
 ```
-Pitch Source (MIDI note or Base Pitch + Pitch CV) → Frequency (with glide)
-  → Master Phase Oscillator → Pulse Trigger → Mask Decision (stochastic/burst)
-  → For each formant (1–3):
-      Pulsaret (table morph or sample) × Window (table morph) × Mask
-      → Constant-power pan → Stereo accumulate
-  → Normalize → Envelope (per-pulse AR in Free Run, ASR in MIDI) × Velocity × Amplitude
-  → DC-blocking highpass → Soft clip (Padé tanh)
+Pitch Source (MIDI note or Base Pitch × Chord Ratio + Pitch CV) → Frequency (with glide)
+  → For each voice (1–4):
+      Master Phase Oscillator → Pulse Trigger → Mask Decision (stochastic/burst)
+      → For each formant (1–3):
+          Pulsaret (table morph or sample) × Window (table morph) × Mask
+          → Constant-power pan → Stereo accumulate
+      → Normalize → Envelope (per-pulse AR in Free Run, ASR in MIDI) × Velocity × Amplitude
+      → DC-blocking highpass
+  → Sum voices → Normalize by voice count → Soft clip (Padé tanh)
   → Output L/R
 ```
 
@@ -187,12 +193,14 @@ Encoders and buttons not listed below retain their standard disting NT navigatio
 | Centre | Duty Cycle | 1–100% |
 | Right | Window morph | 0.0–4.0 (sweeps all 5 windows) |
 
-### Encoder Buttons
+### Buttons
 
 | Button | Action |
 |--------|--------|
 | Left encoder button | Cycle mask mode: Off → Stochastic → Burst → Off |
 | Right encoder button | Cycle formant count: 1 → 2 → 3 → 1 |
+| Button 3 | Cycle voice count: 1 → 2 → 3 → 4 → 1 |
+| Button 4 | Cycle chord type (14 options) |
 
 ### Outputs
 
@@ -204,9 +212,10 @@ The custom display shows (256×64 px, standard parameter line at top):
 
 - **Waveform preview** — real-time pulsaret × window shape, responds to CV modulation of pulsaret, window, duty, and formant parameters
 - **Fundamental Hz** — current oscillator frequency
-- **Formant count** — "1F", "2F", or "3F"
-- **Envelope bar** — animated ASR envelope level
-- **Gate indicator** — lit when gate is open
+- **Formant count + voice count** — "2F 4V"
+- **Chord type label** — "MAJ", "OCT", etc. (Free Run mode; dimmed when voice count is 1)
+- **Envelope bar** — max envelope across all voices
+- **Gate indicator** — lit when any voice gate is open
 - **"FR" label** — shown when in Free Run mode
 - **Peak output meter** — below waveform, shows output level
 - **F1/F2/F3 Hz readouts** — effective formant frequencies after CV modulation (inactive formants shown dimmed)
@@ -220,8 +229,9 @@ The custom display shows (256×64 px, standard parameter line at top):
 4. Add parallel formants on the **Formants** page and spread them with **Panning**
 5. Create rhythmic textures with **Masking** (stochastic for random dropouts, burst for repeating patterns)
 6. Patch CV sources to modulate formant frequencies, duty cycle, mask amount, pulsaret/window morph, amplitude, pan, attack, or release — all 12 inputs are assigned by default
-7. For MIDI control, switch **Gate Mode** to MIDI on the **Routing** page and set your MIDI channel
-8. Optionally load a WAV file from the SD card as a custom pulsaret waveform on the **Sample** page
+7. Add voices on the **Polyphony** page — in Free Run mode, choose a **Chord Type** to stack intervals; in MIDI mode, play chords
+8. For MIDI control, switch **Gate Mode** to MIDI on the **Routing** page and set your MIDI channel
+9. Optionally load a WAV file from the SD card as a custom pulsaret waveform on the **Sample** page
 
 ## Sound Design Tips
 
@@ -291,6 +301,26 @@ With 2 or 3 formants active, spreading their pan positions creates wide stereo i
 - **Longer attack (50–200 ms)** softens each pulse onset for pad-like sounds.
 - **Long release (500–2000 ms)** in MIDI mode creates sustained, reverb-like tails after note-off.
 
+### Polyphony — chords and interval stacking
+
+Voice Count adds up to 4 simultaneous voices. In MIDI mode, this enables playing chords with automatic voice allocation and voice stealing. In Free Run mode, additional voices are tuned relative to the base pitch according to the selected Chord Type.
+
+**Harmonic intervals** (frequency ratios):
+- **Unison** — all voices at the same pitch; use for thickening via detuned formants or masking variation
+- **Octaves** (1×, 2×, 4×, 8×) — wide, organ-like stacking spanning 3 octaves
+- **Fifths** (1×, 1.5×, 2×, 3×) — open, consonant, medieval quality
+- **Sub+Oct** (0.5×, 1×, 2×, 4×) — adds a sub-octave below the base pitch
+
+**Tonal chords** (equal temperament):
+- **Major / Minor** — standard triads with octave doubling in voice 4
+- **Maj7 / Min7 / Dom7** — jazz voicings; pair with sine pulsaret + Gaussian window for warm pad chords
+- **Sus4** — ambiguous, unresolved tension
+- **Dim / Aug** — dissonant, unstable intervals; effective with stochastic masking for unsettling textures
+- **Power** (root, 5th, oct, oct+5th) — heavy, distorted-guitar-style voicing
+- **Open5th** (root, 5th, oct, oct+maj3) — spread voicing with major color
+
+Each voice has independent phase, envelope, masking (PRNG/burst), and DC filter state. Volume is normalized by voice count (not active voices) so adding/removing voices doesn't cause level jumps.
+
 ### Combination Recipes
 
 | Recipe | Pulsaret | Window | Duty | Formants | Masking | Character |
@@ -302,6 +332,10 @@ With 2 or 3 formants active, spreading their pan positions creates wide stereo i
 | Rhythmic bass | Saw (5.0) | Rectangular (0.0) | 50% | F1=80 | Burst 3on/2off | Stuttering low tone |
 | Plucked string | Sinc (3.0) | Exp decay (3.0) | 45% | F1=400, F2=800 | Off | Percussive pluck |
 | Harsh industrial | Square (6.0) | Rectangular (0.0) | 25% | F1=150, F2=1500 | Stochastic 40% | Aggressive buzz |
+| Organ stack | Sine (0.0) | Hann (2.0) | 80% | F1=200, F2=800 | Off | 4V Octaves — rich organ |
+| Power drone | Saw (5.0) | Gaussian (1.0) | 50% | F1=100 | Off | 4V Power — heavy fifth-stack |
+| Maj7 pad | Sinc (3.0) | Gaussian (1.0) | 60% | F1=300, F2=900 | Off | 4V Maj7 — warm jazz chord |
+| Dissonant cloud | Noise (9.0) | Exp decay (3.0) | 15% | F1=500 | Stochastic 60% | 4V Dim — eerie cluster |
 
 ## License
 
