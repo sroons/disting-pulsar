@@ -113,7 +113,7 @@ struct _pulsarDTC {
 // ============================================================
 // Parameter indices
 //
-// 46 parameters across 13 pages. Indices must match the order
+// 45 parameters across 13 pages. Indices must match the order
 // of entries in the parametersDefault[] array below.
 // ============================================================
 
@@ -189,7 +189,6 @@ enum {
 
 	// -- CV Voice page --
 	kParamGateCV,       // Bus selector: gate input (>2.5V = high)
-	kParamVoicePitchCV, // Bus selector: 1V/oct pitch for voice triggering
 
 	kNumParams,
 };
@@ -336,7 +335,6 @@ static const _NT_parameter parametersDefault[] = {
 
 	// CV Voice page
 	NT_PARAMETER_CV_INPUT( "Gate CV",        0, 0 )
-	NT_PARAMETER_CV_INPUT( "Voice Pitch CV", 0, 0 )
 };
 
 // ============================================================
@@ -354,7 +352,7 @@ static const uint8_t pageCV1[]       = { kParamPitchCV, kParamDutyCV, kParamMask
 static const uint8_t pageCV2[]       = { kParamPulsaretCV, kParamWindowCV, kParamAmplitudeCV };
 static const uint8_t pageCV3[]       = { kParamFormant1CV, kParamFormant2CV, kParamFormant3CV };
 static const uint8_t pageCV4[]       = { kParamPan1CV, kParamAttackCV, kParamReleaseCV };
-static const uint8_t pageVoiceCV[]   = { kParamGateCV, kParamVoicePitchCV };
+static const uint8_t pageVoiceCV[]   = { kParamGateCV };
 static const uint8_t pageRouting[]   = { kParamOutputL, kParamOutputLMode, kParamOutputR, kParamOutputRMode, kParamGateMode, kParamMidiCh, kParamBasePitch };
 
 static const _NT_parameterPage pages[] = {
@@ -923,7 +921,6 @@ void parameterChanged(_NT_algorithm* self, int p)
 			NT_setParameterGrayedOut(algIdx, kParamMidiCh + offset, pThis->gateMode != 0);
 			NT_setParameterGrayedOut(algIdx, kParamChordType + offset, pThis->gateMode != 1);
 			NT_setParameterGrayedOut(algIdx, kParamGateCV + offset, pThis->gateMode != 2);
-			NT_setParameterGrayedOut(algIdx, kParamVoicePitchCV + offset, pThis->gateMode != 2);
 		}
 		if (pThis->gateMode == 1)
 		{
@@ -1246,16 +1243,13 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	if (pThis->v[kParamReleaseCV] > 0)
 		cvRelease = busFrames + (pThis->v[kParamReleaseCV] - 1) * numFrames;
 
-	// CV Voice gate+pitch bus pointers
+	// CV Voice gate bus pointer
 	float* cvGate = NULL;
-	float* cvVoicePitch = NULL;
 	bool cvMode = (pThis->v[kParamGateMode] == 2);
 	if (cvMode)
 	{
 		if (pThis->v[kParamGateCV] > 0)
 			cvGate = busFrames + (pThis->v[kParamGateCV] - 1) * numFrames;
-		if (pThis->v[kParamVoicePitchCV] > 0)
-			cvVoicePitch = busFrames + (pThis->v[kParamVoicePitchCV] - 1) * numFrames;
 	}
 
 	// SD card mount detection
@@ -1477,8 +1471,8 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 				voice.envTarget = 1.0f;
 				voice.velocity = 127;
 				float pitchHz = pThis->basePitchHz;
-				if (cvVoicePitch)
-					pitchHz *= fastExp2f(cvVoicePitch[i]);
+				if (cvPitch)
+					pitchHz *= fastExp2f(cvPitch[i]);
 				voice.targetFundamentalHz = pitchHz;
 				if (pThis->glideMs <= 0.0f || voice.fundamentalHz <= 0.0f)
 					voice.fundamentalHz = pitchHz;
@@ -1488,9 +1482,9 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 			else if (gateHigh && dtc->activeVoiceIdx >= 0)
 			{
 				// Gate held: active voice tracks pitch CV
-				if (cvVoicePitch)
+				if (cvPitch)
 				{
-					float pitchHz = pThis->basePitchHz * fastExp2f(cvVoicePitch[i]);
+					float pitchHz = pThis->basePitchHz * fastExp2f(cvPitch[i]);
 					dtc->voices[dtc->activeVoiceIdx].targetFundamentalHz = pitchHz;
 				}
 			}
@@ -1523,9 +1517,11 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 			float glideC = voice.glideCoeff;
 			voice.fundamentalHz = voice.targetFundamentalHz + glideC * (voice.fundamentalHz - voice.targetFundamentalHz);
 
-			// Per-sample pitch CV (1V/oct) — shifts all voices proportionally
+			// Per-sample pitch CV (1V/oct)
+			// In CV mode, pitch is captured per-voice at gate trigger (releasing voices keep their pitch)
+			// In other modes, pitch CV shifts all voices proportionally
 			float freqHz = voice.fundamentalHz;
-			if (cvPitch)
+			if (cvPitch && !cvMode)
 				freqHz *= fastExp2f(cvPitch[i]);
 
 			// Advance master phase
