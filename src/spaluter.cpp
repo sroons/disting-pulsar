@@ -928,15 +928,29 @@ void parameterChanged(_NT_algorithm* self, int p)
 			// Free Run: set up all active voices with interval ratios
 			updateFreeRunVoices(pThis);
 		}
+		else if (pThis->gateMode == 2)
+		{
+			// CV: fully reset all voices so no Free Run state bleeds through
+			for (int v = 0; v < kMaxVoices; ++v)
+			{
+				dtc->voices[v].gate = false;
+				dtc->voices[v].envTarget = 0.0f;
+				dtc->voices[v].envValue = 0.0f;
+				dtc->voices[v].fundamentalHz = 0.0f;
+				dtc->voices[v].targetFundamentalHz = 0.0f;
+				dtc->voices[v].masterPhase = 0.0f;
+			}
+			dtc->prevGateHigh = false;
+			dtc->activeVoiceIdx = -1;
+		}
 		else
 		{
-			// MIDI or CV: release all voices gracefully
+			// MIDI: release all voices gracefully
 			for (int v = 0; v < kMaxVoices; ++v)
 			{
 				dtc->voices[v].gate = false;
 				dtc->voices[v].envTarget = 0.0f;
 			}
-			dtc->activeVoiceIdx = -1;
 		}
 		break;
 	case kParamBasePitch:
