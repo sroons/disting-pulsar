@@ -920,6 +920,7 @@ void parameterChanged(_NT_algorithm* self, int p)
 			NT_setParameterGrayedOut(algIdx, kParamBasePitch + offset, pThis->gateMode == 0);
 			NT_setParameterGrayedOut(algIdx, kParamMidiCh + offset, pThis->gateMode != 0);
 			NT_setParameterGrayedOut(algIdx, kParamChordType + offset, pThis->gateMode != 1);
+			NT_setParameterGrayedOut(algIdx, kParamVoiceCount + offset, pThis->gateMode == 2);
 			NT_setParameterGrayedOut(algIdx, kParamGateCV + offset, pThis->gateMode != 2);
 		}
 		if (pThis->gateMode == 1)
@@ -1180,6 +1181,10 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	int voiceCount = pThis->voiceCount;
 	int chordType = pThis->chordType;
 
+	// CV mode always uses all 4 voices for overlapping triggers
+	bool cvMode = (pThis->v[kParamGateMode] == 2);
+	if (cvMode) voiceCount = kMaxVoices;
+
 	// Free Run: ensure voice state is correct every block
 	bool freeRunMode = (pThis->v[kParamGateMode] == 1);
 	if (freeRunMode)
@@ -1245,12 +1250,8 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 
 	// CV Voice gate bus pointer
 	float* cvGate = NULL;
-	bool cvMode = (pThis->v[kParamGateMode] == 2);
-	if (cvMode)
-	{
-		if (pThis->v[kParamGateCV] > 0)
-			cvGate = busFrames + (pThis->v[kParamGateCV] - 1) * numFrames;
-	}
+	if (cvMode && pThis->v[kParamGateCV] > 0)
+		cvGate = busFrames + (pThis->v[kParamGateCV] - 1) * numFrames;
 
 	// SD card mount detection
 	bool cardMounted = NT_isSdCardMounted();
