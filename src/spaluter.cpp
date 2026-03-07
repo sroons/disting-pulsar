@@ -9,7 +9,8 @@
 // stochastic or burst masking create rich, evolving timbres.
 //
 // 4-voice polyphony: MIDI mode plays chords with voice stealing,
-// Free Run mode stacks harmonic intervals (octaves, fifths, etc.).
+// Free Run mode stacks harmonic intervals (octaves, fifths, etc.),
+// CV mode triggers overlapping voices from gate+pitch CV (Rings-style).
 //
 // Architecture:
 //   DRAM  (~312 KB) — pre-computed pulsaret/window lookup tables + sample buffer
@@ -105,12 +106,14 @@ struct _pulsarDTC {
 	_pulsarVoice voices[kMaxVoices]; // 4 voice slots (~416 bytes)
 	uint8_t voiceAge[kMaxVoices];    // LRU tracking for voice stealing
 	uint8_t nextVoiceAge;            // Monotonic counter for age assignment
+	bool prevGateHigh;               // Previous gate CV state for edge detection
+	int8_t activeVoiceIdx;           // Voice currently tracking pitch CV (-1 if none)
 };
 
 // ============================================================
 // Parameter indices
 //
-// 44 parameters across 12 pages. Indices must match the order
+// 46 parameters across 13 pages. Indices must match the order
 // of entries in the parametersDefault[] array below.
 // ============================================================
 
@@ -184,6 +187,10 @@ enum {
 	kParamVoiceCount,   // 1–4: number of simultaneous voices
 	kParamChordType,    // Enum: chord/interval type for Free Run mode
 
+	// -- CV Voice page --
+	kParamGateCV,       // Bus selector: gate input (>2.5V = high)
+	kParamVoicePitchCV, // Bus selector: 1V/oct pitch for voice triggering
+
 	kNumParams,
 };
 
@@ -194,7 +201,7 @@ enum {
 static char const * const enumDutyMode[] = { "Manual", "Formant" };
 static char const * const enumMaskMode[] = { "Off", "Stochastic", "Burst" };
 static char const * const enumUseSample[] = { "Off", "On" };
-static char const * const enumGateMode[] = { "MIDI", "Free Run" };
+static char const * const enumGateMode[] = { "MIDI", "Free Run", "CV" };
 static char const * const enumChordType[] = {
 	"Unison", "Octaves", "Fifths", "Sub+Oct",
 	"Major", "Minor", "Maj7", "Min7",
@@ -320,12 +327,16 @@ static const _NT_parameter parametersDefault[] = {
 	NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE( "Output R", 1, 14 )
 
 	// Gate mode (must be at end of routing to match enum order)
-	{ .name = "Gate Mode",   .min = 0,   .max = 1,     .def = 1,   .unit = kNT_unitEnum,    .scaling = kNT_scalingNone, .enumStrings = enumGateMode },
+	{ .name = "Gate Mode",   .min = 0,   .max = 2,     .def = 1,   .unit = kNT_unitEnum,    .scaling = kNT_scalingNone, .enumStrings = enumGateMode },
 	{ .name = "Base Pitch",  .min = 0,   .max = 127,   .def = 24,  .unit = kNT_unitMIDINote, .scaling = kNT_scalingNone, .enumStrings = NULL },
 
 	// Polyphony page
 	{ .name = "Voice Count", .min = 1,   .max = 4,     .def = 1,   .unit = kNT_unitNone,    .scaling = kNT_scalingNone, .enumStrings = NULL },
 	{ .name = "Chord Type",  .min = 0,   .max = 13,    .def = 0,   .unit = kNT_unitEnum,    .scaling = kNT_scalingNone, .enumStrings = enumChordType },
+
+	// CV Voice page
+	NT_PARAMETER_CV_INPUT( "Gate CV",        0, 0 )
+	NT_PARAMETER_CV_INPUT( "Voice Pitch CV", 0, 0 )
 };
 
 // ============================================================
@@ -343,6 +354,7 @@ static const uint8_t pageCV1[]       = { kParamPitchCV, kParamDutyCV, kParamMask
 static const uint8_t pageCV2[]       = { kParamPulsaretCV, kParamWindowCV, kParamAmplitudeCV };
 static const uint8_t pageCV3[]       = { kParamFormant1CV, kParamFormant2CV, kParamFormant3CV };
 static const uint8_t pageCV4[]       = { kParamPan1CV, kParamAttackCV, kParamReleaseCV };
+static const uint8_t pageVoiceCV[]   = { kParamGateCV, kParamVoicePitchCV };
 static const uint8_t pageRouting[]   = { kParamOutputL, kParamOutputLMode, kParamOutputR, kParamOutputRMode, kParamGateMode, kParamMidiCh, kParamBasePitch };
 
 static const _NT_parameterPage pages[] = {
@@ -357,6 +369,7 @@ static const _NT_parameterPage pages[] = {
 	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV2),       .group = 10, .params = pageCV2 },
 	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV3),       .group = 10, .params = pageCV3 },
 	{ .name = "CV Inputs",  .numParams = ARRAY_SIZE(pageCV4),       .group = 10, .params = pageCV4 },
+	{ .name = "CV Voice",   .numParams = ARRAY_SIZE(pageVoiceCV),  .group = 10, .params = pageVoiceCV },
 	{ .name = "Routing",    .numParams = ARRAY_SIZE(pageRouting),   .group = 11, .params = pageRouting },
 };
 
@@ -402,7 +415,7 @@ struct _pulsarAlgorithm : public _NT_algorithm
 	float pan[3];                     // -1.0 to +1.0: per-formant stereo pan position
 	int useSample;                    // 0=table pulsaret, 1=sample pulsaret
 	float sampleRateRatio;            // 0.25–4.0: sample playback rate multiplier
-	int gateMode;                     // 0=MIDI, 1=Free Run
+	int gateMode;                     // 0=MIDI, 1=Free Run, 2=CV
 	float basePitchHz;                // Hz from Base Pitch param
 	float peakLevel;                  // Peak |output| over last block (for display)
 	int voiceCount;                   // 1–4: active voice count
@@ -603,6 +616,8 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	// Initialize DTC (memset zeros all fields including all 4 voices)
 	_pulsarDTC* dtc = alg->dtc;
 	memset(dtc, 0, sizeof(_pulsarDTC));
+	dtc->prevGateHigh = false;
+	dtc->activeVoiceIdx = -1;
 
 	float sr = static_cast<float>(NT_globals.sampleRate);
 	float dcCoeff = 1.0f - (2.0f * static_cast<float>(M_PI) * 25.0f / sr);
@@ -905,8 +920,10 @@ void parameterChanged(_NT_algorithm* self, int p)
 		if (algIdx >= 0)
 		{
 			NT_setParameterGrayedOut(algIdx, kParamBasePitch + offset, pThis->gateMode == 0);
-			NT_setParameterGrayedOut(algIdx, kParamMidiCh + offset, pThis->gateMode == 1);
-			NT_setParameterGrayedOut(algIdx, kParamChordType + offset, pThis->gateMode == 0);
+			NT_setParameterGrayedOut(algIdx, kParamMidiCh + offset, pThis->gateMode != 0);
+			NT_setParameterGrayedOut(algIdx, kParamChordType + offset, pThis->gateMode != 1);
+			NT_setParameterGrayedOut(algIdx, kParamGateCV + offset, pThis->gateMode != 2);
+			NT_setParameterGrayedOut(algIdx, kParamVoicePitchCV + offset, pThis->gateMode != 2);
 		}
 		if (pThis->gateMode == 1)
 		{
@@ -915,12 +932,13 @@ void parameterChanged(_NT_algorithm* self, int p)
 		}
 		else
 		{
-			// MIDI: release all voices gracefully
+			// MIDI or CV: release all voices gracefully
 			for (int v = 0; v < kMaxVoices; ++v)
 			{
 				dtc->voices[v].gate = false;
 				dtc->voices[v].envTarget = 0.0f;
 			}
+			dtc->activeVoiceIdx = -1;
 		}
 		break;
 	case kParamBasePitch:
@@ -960,8 +978,8 @@ void midiMessage(_NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byte
 	_pulsarAlgorithm* pThis = static_cast<_pulsarAlgorithm*>(self);
 	_pulsarDTC* dtc = pThis->dtc;
 
-	// Free Run mode ignores MIDI notes
-	if (pThis->v[kParamGateMode] == 1)
+	// Only MIDI mode (0) processes MIDI notes
+	if (pThis->v[kParamGateMode] != 0)
 		return;
 
 	int channel = byte0 & 0x0f;
@@ -1228,6 +1246,18 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	if (pThis->v[kParamReleaseCV] > 0)
 		cvRelease = busFrames + (pThis->v[kParamReleaseCV] - 1) * numFrames;
 
+	// CV Voice gate+pitch bus pointers
+	float* cvGate = NULL;
+	float* cvVoicePitch = NULL;
+	bool cvMode = (pThis->v[kParamGateMode] == 2);
+	if (cvMode)
+	{
+		if (pThis->v[kParamGateCV] > 0)
+			cvGate = busFrames + (pThis->v[kParamGateCV] - 1) * numFrames;
+		if (pThis->v[kParamVoicePitchCV] > 0)
+			cvVoicePitch = busFrames + (pThis->v[kParamVoicePitchCV] - 1) * numFrames;
+	}
+
 	// SD card mount detection
 	bool cardMounted = NT_isSdCardMounted();
 	if (pThis->cardMounted != cardMounted)
@@ -1403,6 +1433,80 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	{
 		float totalL = 0.0f;
 		float totalR = 0.0f;
+
+		// CV gate+pitch voice triggering (per-sample edge detection)
+		if (cvMode && cvGate)
+		{
+			bool gateHigh = (cvGate[i] > 2.5f);
+
+			if (gateHigh && !dtc->prevGateHigh)
+			{
+				// Rising edge: allocate a voice
+				int chosen = -1;
+
+				// 1. Free voice: released voice with lowest envelope
+				float lowestEnv = 2.0f;
+				for (int v = 0; v < voiceCount; ++v)
+				{
+					if (!dtc->voices[v].gate && dtc->voices[v].envValue < lowestEnv)
+					{
+						lowestEnv = dtc->voices[v].envValue;
+						chosen = v;
+					}
+				}
+
+				// 2. Steal: oldest voice (lowest voiceAge)
+				if (chosen < 0)
+				{
+					uint8_t oldestAge = dtc->voiceAge[0];
+					chosen = 0;
+					for (int v = 1; v < voiceCount; ++v)
+					{
+						int8_t diff = (int8_t)(dtc->voiceAge[v] - oldestAge);
+						if (diff < 0)
+						{
+							oldestAge = dtc->voiceAge[v];
+							chosen = v;
+						}
+					}
+				}
+
+				// Assign to chosen voice
+				_pulsarVoice& voice = dtc->voices[chosen];
+				voice.gate = true;
+				voice.envTarget = 1.0f;
+				voice.velocity = 127;
+				float pitchHz = pThis->basePitchHz;
+				if (cvVoicePitch)
+					pitchHz *= fastExp2f(cvVoicePitch[i]);
+				voice.targetFundamentalHz = pitchHz;
+				if (pThis->glideMs <= 0.0f || voice.fundamentalHz <= 0.0f)
+					voice.fundamentalHz = pitchHz;
+				dtc->voiceAge[chosen] = dtc->nextVoiceAge++;
+				dtc->activeVoiceIdx = (int8_t)chosen;
+			}
+			else if (gateHigh && dtc->activeVoiceIdx >= 0)
+			{
+				// Gate held: active voice tracks pitch CV
+				if (cvVoicePitch)
+				{
+					float pitchHz = pThis->basePitchHz * fastExp2f(cvVoicePitch[i]);
+					dtc->voices[dtc->activeVoiceIdx].targetFundamentalHz = pitchHz;
+				}
+			}
+			else if (!gateHigh && dtc->prevGateHigh)
+			{
+				// Falling edge: release active voice
+				if (dtc->activeVoiceIdx >= 0)
+				{
+					dtc->voices[dtc->activeVoiceIdx].gate = false;
+					dtc->voices[dtc->activeVoiceIdx].envTarget = 0.0f;
+					dtc->activeVoiceIdx = -1;
+				}
+			}
+
+			dtc->prevGateHigh = gateHigh;
+		}
 
 		for (int vi = 0; vi < voiceCount; ++vi)
 		{
@@ -1694,6 +1798,8 @@ bool draw(_NT_algorithm* self)
 	// Gate mode indicator
 	if (pThis->v[kParamGateMode] == 1)
 		NT_drawText(barX + barW + 12, barY, "FR", 15, kNT_textLeft, kNT_textTiny);
+	else if (pThis->v[kParamGateMode] == 2)
+		NT_drawText(barX + barW + 12, barY, "CV", 15, kNT_textLeft, kNT_textTiny);
 
 	// Chord type label (Free Run mode, dimmed when only 1 voice)
 	if (pThis->v[kParamGateMode] == 1)
