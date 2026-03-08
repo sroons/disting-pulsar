@@ -2,6 +2,8 @@
 
 A [pulsar synthesis](https://en.wikipedia.org/wiki/Pulsar_synthesis) instrument plugin for the [Expert Sleepers disting NT](https://expert-sleepers.co.uk/distingNT.html) Eurorack module.
 
+[Demo video on YouTube](https://youtu.be/JfdUQbmtTNU)
+
 ## What Is Pulsar Synthesis?
 
 Pulsar synthesis is a technique developed by [Curtis Roads](https://www.curtisroads.net/) and Alberto de Campo in the early 2000s, described in Roads' book [*Microsound*](https://mitpress.mit.edu/9780262681544/microsound/) (MIT Press, 2001). It belongs to the family of granular and particle-based synthesis methods that operate on the *micro-timescale* of sound — durations below about 100 milliseconds, where individual sonic events blur into continuous tones and textures.
