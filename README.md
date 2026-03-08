@@ -2,7 +2,7 @@
 
 A [pulsar synthesis](https://en.wikipedia.org/wiki/Pulsar_synthesis) instrument plugin for the [Expert Sleepers disting NT](https://expert-sleepers.co.uk/distingNT.html) Eurorack module.
 
-[Demo video on YouTube](https://youtu.be/JfdUQbmtTNU)
+[![Demo video](https://img.youtube.com/vi/JfdUQbmtTNU/maxresdefault.jpg)](https://youtu.be/JfdUQbmtTNU)
 
 ## What Is Pulsar Synthesis?
 
@@ -59,7 +59,7 @@ Roads also introduced **masking** — selectively muting pulses within the train
 
 ## Parameters
 
-65 parameters across 16 pages:
+66 parameters across 16 pages:
 
 | Page | Parameter | Range | Default |
 |------|-----------|-------|---------|
@@ -77,7 +77,8 @@ Roads also introduced **masking** — selectively muting pulses within the train
 | | Burst Off | 0–16 | 4 |
 | **Envelope** | Attack | 0.1–2000 ms | 10 ms |
 | | Release | 1.0–3200 ms | 200 ms |
-| | Amplitude | 0–100% | 0% |
+| | Amplitude | 0–200% | 0% |
+| | Drive | 100–400% | 100% |
 | | Glide | 0–2000 ms | 0 ms |
 | **Panning** | Pan 1 | -100 to +100 | 0 |
 | | Pan 2 | -100 to +100 | -50 |
@@ -156,7 +157,7 @@ Pitch Source:
     → Normalize → Envelope × Velocity × Amplitude × Amp Jitter
        (per-pulse AR in Free Run; ASR in MIDI and CV modes)
     → DC-blocking highpass
-→ Sum voices → Normalize by voice count
+→ Sum voices → Normalize by voice count → Drive (1–4× gain)
 → [Pre-clip L/R tap] → Soft clip (Padé tanh)
 → Output L/R
 → [Oct Down L/R: Output through frequency divider → sub-octave]
@@ -242,8 +243,8 @@ If you want to modify the plugin and rebuild:
 ### Build
 
 ```sh
-git clone --recursive https://github.com/sroons/disting-pulsar.git
-cd disting-pulsar
+git clone --recursive https://github.com/sroons/spaluter.git
+cd spaluter
 make
 ```
 
