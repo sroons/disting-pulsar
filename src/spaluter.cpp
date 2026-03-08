@@ -175,7 +175,8 @@ enum {
 	// -- Envelope page --
 	kParamAttack,       // 0.1–2000 ms (scaling10): ASR envelope attack time
 	kParamRelease,      // 1.0–3200 ms (scaling10): ASR envelope release time
-	kParamAmplitude,    // 0–100%: master output amplitude
+	kParamAmplitude,    // 0–200%: master output amplitude
+	kParamDrive,        // 100–400%: pre-clip drive (gain into soft clipper)
 	kParamGlide,        // 0–2000 ms (scaling10): portamento time between notes
 
 	// -- Panning page --
@@ -350,7 +351,8 @@ static const _NT_parameter parametersDefault[] = {
 	// Envelope page
 	{ .name = "Attack",      .min = 1,   .max = 20000, .def = 100, .unit = kNT_unitMs,      .scaling = kNT_scaling10, .enumStrings = NULL },
 	{ .name = "Release",     .min = 10,  .max = 32000, .def = 2000,.unit = kNT_unitMs,      .scaling = kNT_scaling10, .enumStrings = NULL },
-	{ .name = "Amplitude",   .min = 0,   .max = 100,   .def = 0,   .unit = kNT_unitPercent, .scaling = kNT_scalingNone, .enumStrings = NULL },
+	{ .name = "Amplitude",   .min = 0,   .max = 200,   .def = 0,   .unit = kNT_unitPercent, .scaling = kNT_scalingNone, .enumStrings = NULL },
+	{ .name = "Drive",       .min = 100, .max = 400,   .def = 100, .unit = kNT_unitPercent, .scaling = kNT_scalingNone, .enumStrings = NULL },
 	{ .name = "Glide",       .min = 0,   .max = 20000, .def = 0,   .unit = kNT_unitMs,      .scaling = kNT_scaling10, .enumStrings = NULL },
 
 	// Panning page
@@ -428,7 +430,7 @@ static const _NT_parameter parametersDefault[] = {
 static const uint8_t pageSynthesis[] = { kParamPulsaret, kParamWindow, kParamDutyCycle, kParamDutyMode };
 static const uint8_t pageFormants[]  = { kParamFormantCount, kParamFormant1Hz, kParamFormant2Hz, kParamFormant3Hz };
 static const uint8_t pageMasking[]   = { kParamMaskMode, kParamMaskAmount, kParamBurstOn, kParamBurstOff };
-static const uint8_t pageEnvelope[]  = { kParamAttack, kParamRelease, kParamAmplitude, kParamGlide };
+static const uint8_t pageEnvelope[]  = { kParamAttack, kParamRelease, kParamAmplitude, kParamDrive, kParamGlide };
 static const uint8_t pagePanning[]   = { kParamPan1, kParamPan2, kParamPan3 };
 static const uint8_t pagePolyphony[] = { kParamVoiceCount, kParamChordType };
 static const uint8_t pageSample[]    = { kParamUseSample, kParamFolder, kParamFile, kParamSampleRate };
@@ -498,7 +500,8 @@ struct _pulsarAlgorithm : public _NT_algorithm
 	int burstOff;                     // Burst pattern: consecutive muted pulses
 	float attackMs;                   // Envelope attack time in ms
 	float releaseMs;                  // Envelope release time in ms
-	float amplitude;                  // 0.0–1.0: master amplitude
+	float amplitude;                  // 0.0–2.0: master amplitude
+	float drive;                      // 1.0–4.0: pre-clip drive gain
 	float glideMs;                    // Glide/portamento time in ms
 	float pan[3];                     // -1.0 to +1.0: per-formant stereo pan position
 	int useSample;                    // 0=table pulsaret, 1=sample pulsaret
@@ -753,6 +756,7 @@ _NT_algorithm* construct(const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorith
 	alg->attackMs = 10.0f;
 	alg->releaseMs = 200.0f;
 	alg->amplitude = 0.0f;
+	alg->drive = 1.0f;
 	alg->glideMs = 0.0f;
 	alg->pan[0] = 0.0f;
 	alg->pan[1] = -0.5f;
@@ -963,6 +967,9 @@ void parameterChanged(_NT_algorithm* self, int p)
 		break;
 	case kParamAmplitude:
 		pThis->amplitude = pThis->v[kParamAmplitude] / 100.0f;
+		break;
+	case kParamDrive:
+		pThis->drive = pThis->v[kParamDrive] / 100.0f;
 		break;
 	case kParamGlide:
 		pThis->glideMs = pThis->v[kParamGlide] / 10.0f;
@@ -1542,7 +1549,7 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 	// Amplitude CV: bipolar ±5V → ±50% offset on amplitude
 	float effectiveAmplitude = amplitude + cvAmplitudeAvg * 0.1f;
 	if (effectiveAmplitude < 0.0f) effectiveAmplitude = 0.0f;
-	if (effectiveAmplitude > 1.0f) effectiveAmplitude = 1.0f;
+	if (effectiveAmplitude > 2.0f) effectiveAmplitude = 2.0f;
 
 	// Formant 1-3 CV: bipolar ±5V → ±1000 Hz offset, clamped to [20, 2000]
 	float modulatedFormantHz[3];
@@ -1990,7 +1997,11 @@ void step(_NT_algorithm* self, float* busFrames, int numFramesBy4)
 		totalL *= invVoiceCount;
 		totalR *= invVoiceCount;
 
-		// Pre-clip aux outputs (after normalize, before soft clip)
+		// Drive (gain into soft clipper)
+		totalL *= pThis->drive;
+		totalR *= pThis->drive;
+
+		// Pre-clip aux outputs (after normalize + drive, before soft clip)
 		if (preClipL)
 		{
 			if (preClipLReplace)
